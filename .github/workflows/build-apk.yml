@@ -92,57 +92,34 @@ jobs:
         open('android/app/src/main/assets/models/antispoof_mobilenet_int8.tflite','wb').write(data)
         "
 
-    - name: Setup Gradle with wrapper
+    - name: Setup Gradle with gradlew
       working-directory: android
       run: |
-        echo "Setting up Gradle 8.6 wrapper..."
-        
-        # Create gradle wrapper directory if it doesn't exist
-        mkdir -p gradle/wrapper
-        
-        # Create gradle-wrapper.properties
-        cat > gradle/wrapper/gradle-wrapper.properties << 'EOF'
+        echo "✅ Using existing gradlew from extracted project"
+        if [ -f "gradlew" ]; then
+          echo "gradlew found, making it executable..."
+          chmod +x gradlew
+        else
+          echo "⚠️ gradlew not found! Creating one..."
+          mkdir -p gradle/wrapper
+          cat > gradle/wrapper/gradle-wrapper.properties << 'EOF'
         distributionBase=GRADLE_USER_HOME
         distributionPath=wrapper/dists
         distributionUrl=https\://services.gradle.org/distributions/gradle-8.6-bin.zip
         zipStoreBase=GRADLE_USER_HOME
         zipStorePath=wrapper/dists
         EOF
-        
-        # Create a shell script wrapper that acts as gradlew
-        cat > gradlew << 'EOF'
-        #!/bin/bash
-        set -e
-        
-        GRADLE_VERSION="8.6"
-        GRADLE_HOME="${GRADLE_USER_HOME:=$HOME/.gradle}"
-        
-        # Download gradle if not present
-        GRADLE_DIR="$GRADLE_HOME/wrapper/dists/gradle-$GRADLE_VERSION-bin"
-        if [ ! -d "$GRADLE_DIR" ]; then
-          mkdir -p "$GRADLE_HOME/wrapper/dists"
-          echo "Downloading Gradle $GRADLE_VERSION..."
-          wget -q "https://services.gradle.org/distributions/gradle-$GRADLE_VERSION-bin.zip" -O /tmp/gradle.zip
-          unzip -q /tmp/gradle.zip -d "$GRADLE_HOME/wrapper/dists"
-          rm /tmp/gradle.zip
+          chmod +x gradlew 2>/dev/null || true
         fi
-        
-        # Execute gradle
-        "$GRADLE_HOME/wrapper/dists/gradle-$GRADLE_VERSION/bin/gradle" "$@"
-        EOF
-        
-        chmod +x gradlew
-        echo "✅ Gradle wrapper configured"
 
     - name: Build Debug APK
       working-directory: android
       run: |
-        echo "Starting Gradle build..."
+        echo "Starting Gradle build with info logging..."
         ./gradlew assembleDebug \
           --no-daemon \
-          --stacktrace \
-          -Dorg.gradle.jvmargs="-Xmx4g" \
-          || exit 1
+          --info \
+          -Dorg.gradle.jvmargs="-Xmx4g"
 
     - name: Show APK size
       run: |
