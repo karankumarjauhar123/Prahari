@@ -5,7 +5,6 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
-# GitHub Actions ko Node 24 par force karne ke liye env variable
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
@@ -21,15 +20,16 @@ jobs:
       run: |
         echo "📦 Unzipping..."
         unzip -q PRAHARI_complete.zip
-        echo "✅ Contents:"
+        echo "✅ Raw Contents:"
         ls -la
         
-        # Safely copy files to root if PRAHARI directory exists
+        # Check if PRAHARI folder exists and move contents
         if [ -d "PRAHARI" ]; then
+          echo "Moving contents from PRAHARI folder to root..."
           cp -r PRAHARI/* ./ 2>/dev/null || true
           cp -r PRAHARI/.[!.]* ./ 2>/dev/null || true
         fi
-        echo "✅ Files ready:"
+        echo "✅ Files ready after extraction:"
         ls -la
 
     - name: Setup Java 17
@@ -43,62 +43,62 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: '18'
-        # Cache ko temporarily comment kiya hai jab tak lock file stable na ho jaye
 
     - name: Install dependencies
       run: |
-        # Agar package-lock.json milti hai toh npm ci chalega, nahi toh normal npm install
         if [ -f "package-lock.json" ]; then
           echo "🔒 package-lock.json found. Running npm ci..."
           npm ci
-        else
-          echo "⚠️ package-lock.json NOT found. Running npm install..."
+        elif [ -f "package.json" ]; then
+          echo "⚠️ package.json found but no lockfile. Running npm install..."
           npm install
+        else
+          echo "❌ Error: package.json not found in root! Checking subdirectories..."
+          ls -R
+          exit 1
         fi
 
     - name: Download TFLite models
       run: |
         mkdir -p android/app/src/main/assets/models
 
-        # Face Mesh Lite (MediaPipe - Apache 2.0)
+        # Face Mesh Lite
         wget -q --timeout=60 \
           "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task" \
-          -O android/app/src/main/assets/models/face_mesh_lite.tflite \
-          && echo "✅ face_mesh_lite downloaded" \
-          || echo "⚠️ face_mesh_lite failed"
+          -O android/app/src/main/assets/models/face_mesh_lite.tflite || echo "⚠️ face_mesh_lite failed"
 
-        # BlazeFace short-range (Google - Apache 2.0)
+        # BlazeFace
         wget -q --timeout=60 \
           "https://storage.googleapis.com/download.tensorflow.org/models/tflite/task_library/face_detection/android/lite-model_face-detection_retail_8_metadata_1.tflite" \
-          -O android/app/src/main/assets/models/yolov8_face_nano_int8.tflite \
-          && echo "✅ face_detection downloaded" \
-          || echo "⚠️ face_detection failed"
+          -O android/app/src/main/assets/models/yolov8_face_nano_int8.tflite || echo "⚠️ face_detection failed"
 
         # MobileFaceNet
         wget -q --timeout=60 \
           "https://storage.googleapis.com/download.tensorflow.org/models/tflite/mobilefacenet_int8.tflite" \
           -O android/app/src/main/assets/models/adaface_mobilone_s0_int8.tflite \
-          && echo "✅ mobilefacenet downloaded" \
           || python3 -c "
         import struct
         data = bytes([0x18,0x00,0x00,0x00,0x54,0x46,0x4C,0x33])
         open('android/app/src/main/assets/models/adaface_mobilone_s0_int8.tflite','wb').write(data)
-        print('⚠️ placeholder created for adaface')
         "
 
         # Anti-spoof placeholder
         python3 -c "
         data = bytes([0x18,0x00,0x00,0x00,0x54,0x46,0x4C,0x33])
         open('android/app/src/main/assets/models/antispoof_mobilenet_int8.tflite','wb').write(data)
-        print('✅ antispoof placeholder')
         "
 
-        echo "📁 Models folder:"
-        ls -lh android/app/src/main/assets/models/
-
-    - name: Fix Gradle permissions
+    - name: Ensure Gradle Wrapper Exists
       working-directory: android
-      run: chmod +x gradlew
+      run: |
+        if [ ! -f "gradlew" ]; then
+          echo "⚠️ gradlew missing! Generating fallback wrapper inside runner..."
+          sudo apt-get install -y gradle -q
+          gradle wrapper --gradle-version 8.6 --distribution-type all
+        else
+          echo "✅ gradlew found."
+        fi
+        chmod +x gradlew
 
     - name: Build Debug APK
       working-directory: android
