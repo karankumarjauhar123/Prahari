@@ -17,36 +17,32 @@ jobs:
       run: |
         echo "📦 Unzipping..."
         unzip -q PRAHARI_complete.zip
-        echo "✅ Zip extracted. Contents:"
+        echo "✅ Contents:"
         ls -la
         
-        # Check if android folder exists at root after unzip
-        if [ ! -d "android" ]; then
-          # If android is inside PRAHARI folder, copy it out
-          if [ -d "PRAHARI/android" ]; then
-            echo "Moving android folder from PRAHARI to root..."
-            cp -r PRAHARI/android ./
-            cp -r PRAHARI/.github ./
-          fi
+        # Safely copy files to root if PRAHARI directory exists
+        if [ -d "PRAHARI" ]; then
+          cp -r PRAHARI/* ./ 2>/dev/null || true
+          cp -r PRAHARI/.[!.]* ./ 2>/dev/null || true
         fi
-        
-        echo "✅ Final structure:"
+        echo "✅ Files ready:"
         ls -la
-        [ -d "android" ] && echo "✅ android folder found" || echo "❌ android folder NOT found"
 
     - name: Setup Java 17
       uses: actions/setup-java@v4
       with:
         java-version: '17'
         distribution: 'temurin'
+        cache: 'gradle' # Gradle cache enable kiya takki agli baar se jaldi build ho
 
     - name: Setup Node.js 18
       uses: actions/setup-node@v4
       with:
         node-version: '18'
+        cache: 'npm' # NPM dependencies cache karne ke liye
 
     - name: Install dependencies
-      run: npm install
+      run: npm ci # Automated build me 'npm ci' jyada stable aur fast hota hai
 
     - name: Download TFLite models
       run: |
@@ -57,28 +53,28 @@ jobs:
           "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task" \
           -O android/app/src/main/assets/models/face_mesh_lite.tflite \
           && echo "✅ face_mesh_lite downloaded" \
-          || echo "⚠️ face_mesh_lite failed - creating placeholder"
+          || echo "⚠️ face_mesh_lite failed"
 
         # BlazeFace short-range (Google - Apache 2.0)
         wget -q --timeout=60 \
           "https://storage.googleapis.com/download.tensorflow.org/models/tflite/task_library/face_detection/android/lite-model_face-detection_retail_8_metadata_1.tflite" \
           -O android/app/src/main/assets/models/yolov8_face_nano_int8.tflite \
           && echo "✅ face_detection downloaded" \
-          || echo "⚠️ face_detection failed - creating placeholder"
+          || echo "⚠️ face_detection failed"
 
-        # MobileFaceNet (face recognition - Apache 2.0)
+        # MobileFaceNet
         wget -q --timeout=60 \
           "https://storage.googleapis.com/download.tensorflow.org/models/tflite/mobilefacenet_int8.tflite" \
           -O android/app/src/main/assets/models/adaface_mobilone_s0_int8.tflite \
+          && echo "✅ mobilefacenet downloaded" \
           || python3 -c "
         import struct
-        # Create minimal valid TFLite flatbuffer placeholder
         data = bytes([0x18,0x00,0x00,0x00,0x54,0x46,0x4C,0x33])
         open('android/app/src/main/assets/models/adaface_mobilone_s0_int8.tflite','wb').write(data)
         print('⚠️ placeholder created for adaface')
         "
 
-        # Anti-spoof placeholder (will use passive liveness)
+        # Anti-spoof placeholder
         python3 -c "
         data = bytes([0x18,0x00,0x00,0x00,0x54,0x46,0x4C,0x33])
         open('android/app/src/main/assets/models/antispoof_mobilenet_int8.tflite','wb').write(data)
@@ -89,15 +85,8 @@ jobs:
         ls -lh android/app/src/main/assets/models/
 
     - name: Fix Gradle permissions
-      run: |
-        if [ -f "android/gradlew" ]; then
-          chmod +x android/gradlew
-          echo "✅ gradlew permissions fixed"
-        else
-          echo "❌ gradlew not found!"
-          ls -la android/
-          exit 1
-        fi
+      working-directory: android
+      run: chmod +x gradlew
 
     - name: Build Debug APK
       working-directory: android
@@ -105,7 +94,7 @@ jobs:
         ./gradlew assembleDebug \
           --no-daemon \
           --stacktrace \
-          -Dorg.gradle.jvmargs="-Xmx3g"
+          -Dorg.gradle.jvmargs="-Xmx4g" # Memory limit 4GB kar di taaki build crash na ho
 
     - name: Show APK size
       run: |
