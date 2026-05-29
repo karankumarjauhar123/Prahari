@@ -5,6 +5,10 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+# GitHub Actions ko Node 24 par force karne ke liye env variable
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -33,16 +37,24 @@ jobs:
       with:
         java-version: '17'
         distribution: 'temurin'
-        cache: 'gradle' # Gradle cache enable kiya takki agli baar se jaldi build ho
+        cache: 'gradle'
 
     - name: Setup Node.js 18
       uses: actions/setup-node@v4
       with:
         node-version: '18'
-        cache: 'npm' # NPM dependencies cache karne ke liye
+        # Cache ko temporarily comment kiya hai jab tak lock file stable na ho jaye
 
     - name: Install dependencies
-      run: npm ci # Automated build me 'npm ci' jyada stable aur fast hota hai
+      run: |
+        # Agar package-lock.json milti hai toh npm ci chalega, nahi toh normal npm install
+        if [ -f "package-lock.json" ]; then
+          echo "🔒 package-lock.json found. Running npm ci..."
+          npm ci
+        else
+          echo "⚠️ package-lock.json NOT found. Running npm install..."
+          npm install
+        fi
 
     - name: Download TFLite models
       run: |
@@ -94,7 +106,7 @@ jobs:
         ./gradlew assembleDebug \
           --no-daemon \
           --stacktrace \
-          -Dorg.gradle.jvmargs="-Xmx4g" # Memory limit 4GB kar di taaki build crash na ho
+          -Dorg.gradle.jvmargs="-Xmx4g"
 
     - name: Show APK size
       run: |
