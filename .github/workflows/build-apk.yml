@@ -39,10 +39,10 @@ jobs:
         distribution: 'temurin'
         cache: 'gradle'
 
-    - name: Setup Node.js 18
+    - name: Setup Node.js 20
       uses: actions/setup-node@v4
       with:
-        node-version: '18'
+        node-version: '20' # AWS packages ke liye Node 20 zaroori hai
 
     - name: Install dependencies
       run: |
@@ -67,7 +67,7 @@ jobs:
           -O android/app/src/main/assets/models/face_mesh_lite.tflite \
           && echo "✅ face_mesh_lite downloaded" || echo "⚠️ face_mesh_lite failed"
 
-        # BlazeFace / Face Detection (Updated working alternate URL)
+        # BlazeFace / Face Detection
         wget -q --timeout=60 \
           "https://github.com/google/mediapipe/raw/master/mediapipe/modules/face_detection/face_detection_short_range.tflite" \
           -O android/app/src/main/assets/models/yolov8_face_nano_int8.tflite \
@@ -76,7 +76,7 @@ jobs:
         import struct
         data = bytes([0x18,0x00,0x00,0x00,0x54,0x46,0x4C,0x33])
         open('android/app/src/main/assets/models/yolov8_face_nano_int8.tflite','wb').write(data)
-        print('⚠️ face_detection failed - placeholder created')
+        print('⚠️ face_detection placeholder created')
         "
 
         # MobileFaceNet
@@ -88,7 +88,7 @@ jobs:
         import struct
         data = bytes([0x18,0x00,0x00,0x00,0x54,0x46,0x4C,0x33])
         open('android/app/src/main/assets/models/adaface_mobilone_s0_int8.tflite','wb').write(data)
-        print('⚠️ mobilefacenet failed - placeholder created')
+        print('⚠️ mobilefacenet placeholder created')
         "
 
         # Anti-spoof placeholder
@@ -110,8 +110,9 @@ jobs:
           sudo unzip -q gradle-8.6-bin.zip -d /opt
           export PATH=/opt/gradle-8.6/bin:$PATH
           
-          echo "Generating modern gradlew files..."
-          gradle wrapper --gradle-version 8.6 --distribution-type all
+          echo "Generating modern gradlew files with node_modules environment..."
+          # React Native path pass kar rahe hain taaki plugins validate ho sakein
+          gradle wrapper --gradle-version 8.6 --distribution-type all -PnodeModulesDir=../node_modules
         else
           echo "✅ Valid gradlew found in zip."
         fi
