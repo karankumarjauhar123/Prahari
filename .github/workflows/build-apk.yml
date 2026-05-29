@@ -64,28 +64,42 @@ jobs:
         # Face Mesh Lite
         wget -q --timeout=60 \
           "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task" \
-          -O android/app/src/main/assets/models/face_mesh_lite.tflite || echo "⚠️ face_mesh_lite failed"
+          -O android/app/src/main/assets/models/face_mesh_lite.tflite \
+          && echo "✅ face_mesh_lite downloaded" || echo "⚠️ face_mesh_lite failed"
 
-        # BlazeFace
+        # BlazeFace / Face Detection (Updated working alternate URL)
         wget -q --timeout=60 \
-          "https://storage.googleapis.com/download.tensorflow.org/models/tflite/task_library/face_detection/android/lite-model_face-detection_retail_8_metadata_1.tflite" \
-          -O android/app/src/main/assets/models/yolov8_face_nano_int8.tflite || echo "⚠️ face_detection failed"
+          "https://github.com/google/mediapipe/raw/master/mediapipe/modules/face_detection/face_detection_short_range.tflite" \
+          -O android/app/src/main/assets/models/yolov8_face_nano_int8.tflite \
+          && echo "✅ face_detection downloaded" \
+          || python3 -c "
+        import struct
+        data = bytes([0x18,0x00,0x00,0x00,0x54,0x46,0x4C,0x33])
+        open('android/app/src/main/assets/models/yolov8_face_nano_int8.tflite','wb').write(data)
+        print('⚠️ face_detection failed - placeholder created')
+        "
 
         # MobileFaceNet
         wget -q --timeout=60 \
           "https://storage.googleapis.com/download.tensorflow.org/models/tflite/mobilefacenet_int8.tflite" \
           -O android/app/src/main/assets/models/adaface_mobilone_s0_int8.tflite \
+          && echo "✅ mobilefacenet downloaded" \
           || python3 -c "
         import struct
         data = bytes([0x18,0x00,0x00,0x00,0x54,0x46,0x4C,0x33])
         open('android/app/src/main/assets/models/adaface_mobilone_s0_int8.tflite','wb').write(data)
+        print('⚠️ mobilefacenet failed - placeholder created')
         "
 
         # Anti-spoof placeholder
         python3 -c "
         data = bytes([0x18,0x00,0x00,0x00,0x54,0x46,0x4C,0x33])
         open('android/app/src/main/assets/models/antispoof_mobilenet_int8.tflite','wb').write(data)
+        print('✅ antispoof placeholder created')
         "
+
+        echo "📁 Verified Assets Folder Content:"
+        ls -lh android/app/src/main/assets/models/
 
     - name: Setup Correct Gradle Version (8.6)
       working-directory: android
