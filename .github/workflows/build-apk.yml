@@ -53,8 +53,7 @@ jobs:
           echo "⚠️ package.json found but no lockfile. Running npm install..."
           npm install
         else
-          echo "❌ Error: package.json not found in root! Checking subdirectories..."
-          ls -R
+          echo "❌ Error: package.json not found in root!"
           exit 1
         fi
 
@@ -88,15 +87,19 @@ jobs:
         open('android/app/src/main/assets/models/antispoof_mobilenet_int8.tflite','wb').write(data)
         "
 
-    - name: Ensure Gradle Wrapper Exists
+    - name: Setup Correct Gradle Version (8.6)
       working-directory: android
       run: |
         if [ ! -f "gradlew" ]; then
-          echo "⚠️ gradlew missing! Generating fallback wrapper inside runner..."
-          sudo apt-get install -y gradle -q
+          echo "⚠️ gradlew missing! Downloading standalone Gradle 8.6..."
+          wget -q https://services.gradle.org/distributions/gradle-8.6-bin.zip
+          sudo unzip -q gradle-8.6-bin.zip -d /opt
+          export PATH=/opt/gradle-8.6/bin:$PATH
+          
+          echo "Generating modern gradlew files..."
           gradle wrapper --gradle-version 8.6 --distribution-type all
         else
-          echo "✅ gradlew found."
+          echo "✅ Valid gradlew found in zip."
         fi
         chmod +x gradlew
 
