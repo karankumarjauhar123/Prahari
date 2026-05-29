@@ -112,18 +112,17 @@ jobs:
           echo "zipStoreBase=GRADLE_USER_HOME" >> gradle/wrapper/gradle-wrapper.properties
           echo "zipStorePath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
           
-          echo "Bypassing React Native plugin check for wrapper generation..."
-          # settings.gradle me se temporarily com.facebook.react line ko comment out karenge
-          sed -i "s/id 'com.facebook.react.settings'/\/\/ id 'com.facebook.react.settings'/g" settings.gradle
-          sed -i "s/id(\"com.facebook.react.settings\")/\/\/ id(\"com.facebook.react.settings\")/g" settings.gradle
+          echo "Isolating settings.gradle to bypass validation locks..."
+          # Original settings.gradle ko backup karlo aur temporary khali file bana do
+          mv settings.gradle settings.gradle.bak
+          touch settings.gradle
           
           echo "Generating wrapper files..."
           gradle wrapper --gradle-version 8.6 --distribution-type all
           
-          echo "Restoring React Native plugin inside settings.gradle..."
-          # Wapas pehle jaisa kar denge taaki asli build me plugin load ho sake
-          sed -i "s/\/\/ id 'com.facebook.react.settings'/id 'com.facebook.react.settings'/g" settings.gradle
-          sed -i "s/\/\/ id(\"com.facebook.react.settings\")/id(\"com.facebook.react.settings\")/g" settings.gradle
+          echo "Restoring original settings.gradle..."
+          # Wapas original file restore kar do
+          mv settings.gradle.bak settings.gradle
         else
           echo "✅ Valid gradlew found in zip."
         fi
