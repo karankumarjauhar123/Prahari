@@ -5,9 +5,6 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -95,46 +92,57 @@ jobs:
         open('android/app/src/main/assets/models/antispoof_mobilenet_int8.tflite','wb').write(data)
         "
 
-    - name: Setup Correct Gradle Version (8.6)
+    - name: Setup Gradle with wrapper
       working-directory: android
       run: |
-        if [ ! -f "gradlew" ]; then
-          echo "⚠️ gradlew missing! Downloading standalone Gradle 8.6..."
-          wget -q https://services.gradle.org/distributions/gradle-8.6-bin.zip
-          sudo unzip -q gradle-8.6-bin.zip -d /opt
-          export PATH=/opt/gradle-8.6/bin:$PATH
-          
-          echo "Safely creating gradle-wrapper properties..."
-          mkdir -p gradle/wrapper
-          echo "distributionBase=GRADLE_USER_HOME" > gradle/wrapper/gradle-wrapper.properties
-          echo "distributionPath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
-          echo "distributionUrl=https\://services.gradle.org/distributions/gradle-8.6-all.zip" >> gradle/wrapper/gradle-wrapper.properties
-          echo "zipStoreBase=GRADLE_USER_HOME" >> gradle/wrapper/gradle-wrapper.properties
-          echo "zipStorePath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
-          
-          echo "Isolating settings.gradle to bypass validation locks..."
-          # Original settings.gradle ko backup karlo aur temporary khali file bana do
-          mv settings.gradle settings.gradle.bak
-          touch settings.gradle
-          
-          echo "Generating wrapper files..."
-          gradle wrapper --gradle-version 8.6 --distribution-type all
-          
-          echo "Restoring original settings.gradle..."
-          # Wapas original file restore kar do
-          mv settings.gradle.bak settings.gradle
-        else
-          echo "✅ Valid gradlew found in zip."
+        echo "Setting up Gradle 8.6 wrapper..."
+        
+        # Create gradle wrapper directory if it doesn't exist
+        mkdir -p gradle/wrapper
+        
+        # Create gradle-wrapper.properties
+        cat > gradle/wrapper/gradle-wrapper.properties << 'EOF'
+        distributionBase=GRADLE_USER_HOME
+        distributionPath=wrapper/dists
+        distributionUrl=https\://services.gradle.org/distributions/gradle-8.6-bin.zip
+        zipStoreBase=GRADLE_USER_HOME
+        zipStorePath=wrapper/dists
+        EOF
+        
+        # Create a shell script wrapper that acts as gradlew
+        cat > gradlew << 'EOF'
+        #!/bin/bash
+        set -e
+        
+        GRADLE_VERSION="8.6"
+        GRADLE_HOME="${GRADLE_USER_HOME:=$HOME/.gradle}"
+        
+        # Download gradle if not present
+        GRADLE_DIR="$GRADLE_HOME/wrapper/dists/gradle-$GRADLE_VERSION-bin"
+        if [ ! -d "$GRADLE_DIR" ]; then
+          mkdir -p "$GRADLE_HOME/wrapper/dists"
+          echo "Downloading Gradle $GRADLE_VERSION..."
+          wget -q "https://services.gradle.org/distributions/gradle-$GRADLE_VERSION-bin.zip" -O /tmp/gradle.zip
+          unzip -q /tmp/gradle.zip -d "$GRADLE_HOME/wrapper/dists"
+          rm /tmp/gradle.zip
         fi
+        
+        # Execute gradle
+        "$GRADLE_HOME/wrapper/dists/gradle-$GRADLE_VERSION/bin/gradle" "$@"
+        EOF
+        
         chmod +x gradlew
+        echo "✅ Gradle wrapper configured"
 
     - name: Build Debug APK
       working-directory: android
       run: |
+        echo "Starting Gradle build..."
         ./gradlew assembleDebug \
           --no-daemon \
           --stacktrace \
-          -Dorg.gradle.jvmargs="-Xmx4g"
+          -Dorg.gradle.jvmargs="-Xmx4g" \
+          || exit 1
 
     - name: Show APK size
       run: |
