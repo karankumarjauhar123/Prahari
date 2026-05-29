@@ -42,7 +42,7 @@ jobs:
     - name: Setup Node.js 20
       uses: actions/setup-node@v4
       with:
-        node-version: '20' # AWS packages ke liye Node 20 zaroori hai
+        node-version: '20'
 
     - name: Install dependencies
       run: |
@@ -76,7 +76,6 @@ jobs:
         import struct
         data = bytes([0x18,0x00,0x00,0x00,0x54,0x46,0x4C,0x33])
         open('android/app/src/main/assets/models/yolov8_face_nano_int8.tflite','wb').write(data)
-        print('⚠️ face_detection placeholder created')
         "
 
         # MobileFaceNet
@@ -88,18 +87,13 @@ jobs:
         import struct
         data = bytes([0x18,0x00,0x00,0x00,0x54,0x46,0x4C,0x33])
         open('android/app/src/main/assets/models/adaface_mobilone_s0_int8.tflite','wb').write(data)
-        print('⚠️ mobilefacenet placeholder created')
         "
 
         # Anti-spoof placeholder
         python3 -c "
         data = bytes([0x18,0x00,0x00,0x00,0x54,0x46,0x4C,0x33])
         open('android/app/src/main/assets/models/antispoof_mobilenet_int8.tflite','wb').write(data)
-        print('✅ antispoof placeholder created')
         "
-
-        echo "📁 Verified Assets Folder Content:"
-        ls -lh android/app/src/main/assets/models/
 
     - name: Setup Correct Gradle Version (8.6)
       working-directory: android
@@ -110,9 +104,26 @@ jobs:
           sudo unzip -q gradle-8.6-bin.zip -d /opt
           export PATH=/opt/gradle-8.6/bin:$PATH
           
-          echo "Generating modern gradlew files with node_modules environment..."
-          # React Native path pass kar rahe hain taaki plugins validate ho sakein
-          gradle wrapper --gradle-version 8.6 --distribution-type all -PnodeModulesDir=../node_modules
+          echo "Safely creating gradle-wrapper properties..."
+          mkdir -p gradle/wrapper
+          echo "distributionBase=GRADLE_USER_HOME" > gradle/wrapper/gradle-wrapper.properties
+          echo "distributionPath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
+          echo "distributionUrl=https\://services.gradle.org/distributions/gradle-8.6-all.zip" >> gradle/wrapper/gradle-wrapper.properties
+          echo "zipStoreBase=GRADLE_USER_HOME" >> gradle/wrapper/gradle-wrapper.properties
+          echo "zipStorePath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
+          
+          echo "Bypassing React Native plugin check for wrapper generation..."
+          # settings.gradle me se temporarily com.facebook.react line ko comment out karenge
+          sed -i "s/id 'com.facebook.react.settings'/\/\/ id 'com.facebook.react.settings'/g" settings.gradle
+          sed -i "s/id(\"com.facebook.react.settings\")/\/\/ id(\"com.facebook.react.settings\")/g" settings.gradle
+          
+          echo "Generating wrapper files..."
+          gradle wrapper --gradle-version 8.6 --distribution-type all
+          
+          echo "Restoring React Native plugin inside settings.gradle..."
+          # Wapas pehle jaisa kar denge taaki asli build me plugin load ho sake
+          sed -i "s/\/\/ id 'com.facebook.react.settings'/id 'com.facebook.react.settings'/g" settings.gradle
+          sed -i "s/\/\/ id(\"com.facebook.react.settings\")/id(\"com.facebook.react.settings\")/g" settings.gradle
         else
           echo "✅ Valid gradlew found in zip."
         fi
