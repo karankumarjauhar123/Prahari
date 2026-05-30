@@ -1,0 +1,43 @@
+# ios/Podfile
+require_relative '../node_modules/react-native/scripts/react_native_pods'
+require_relative '../node_modules/@react-native-community/cli-platform-ios/native_modules'
+
+platform :ios, '12.0'
+install! 'cocoapods', :deterministic_uuids => false
+
+target 'PRAHARI' do
+  config = use_native_modules!
+
+  use_react_native!(
+    :path => config[:reactNativePath],
+    :hermes_enabled => true,
+    :fabric_enabled => false,
+    :app_path => "#{Pod::Config.instance.installation_root}/.."
+  )
+
+  # TensorFlow Lite — for model inference
+  pod 'TensorFlowLiteC', '~> 2.14.0'
+  pod 'TensorFlowLiteSwift', '~> 2.14.0'
+
+  # Vision Camera
+  pod 'VisionCamera', :path => '../node_modules/react-native-vision-camera'
+
+  target 'PRAHARITests' do
+    inherit! :complete
+  end
+
+  post_install do |installer|
+    react_native_post_install(installer)
+
+    installer.pods_project.targets.each do |target|
+      target.build_configurations.each do |config|
+        # Minimum iOS 12.0
+        config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '12.0'
+        # Disable Bitcode (required for TFLite GPU)
+        config.build_settings['ENABLE_BITCODE'] = 'NO'
+        # Use arm64 + x86_64
+        config.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = 'arm64'
+      end
+    end
+  end
+end

@@ -1,0 +1,462 @@
+// src/services/FaceEngine.ts
+// Core AI inference engine — AdaFace + YOLOv8-face via TFLite
+
+import { loadTensorflowModel, TensorflowModel } from 'react-native-fast-tflite';
+import RNFS from 'react-native-fs';
+import { MODEL_CONFIG, QUALITY_CONFIG } from '../constants';
+import type {
+  FaceDetection,
+  FaceEmbedding,
+  QualityResult,
+  RecognitionResult,
+  FaceLandmarks,
+  Point,
+} from '../types';
+
+class FaceEngineService {
+  private detectionModel: TensorflowModel | null = null;
+  private recognitionModel: TensorflowModel | null = null;
+  private isInitialized = false;
+  private storedEmbeddings: FaceEmbedding[] = [];
+  private recognitionThreshold = MODEL_CONFIG.RECOGNITION_THRESHOLD;
+
+  setThreshold(val: number) {
+    this.recognitionThreshold = val;
+    console.log(`[FaceEngine] Recognition threshold set to: ${val}`);
+  }
+
+  // ─── Initialization ───────────────────────────────────────────────────────
+
+  async initialize(): Promise<void> {
+    if (this.isInitialized) return;
+    try {
+      console.log('[FaceEngine] Loading models...');
+
+      // Load models from app bundle assets
+      this.detectionModel = await loadTensorflowModel(
+        require('../../models/yolov8_face_nano_int8.tflite'),
+        'default' // uses NNAPI on Android, CoreML on iOS automatically
+      );
+
+      this.recognitionModel = await loadTensorflowModel(
+        require('../../models/adaface_mobilone_s0_int8.tflite'),
+        'default'
+      );
+
+      this.isInitialized = true;
+      console.log('[FaceEngine] ✅ Models loaded successfully');
+    } catch (error) {
+      console.error('[FaceEngine] ❌ Model loading failed:', error);
+      throw new Error('Failed to initialize face recognition engine');
+    }
+  }
+
+  // ─── Face Detection ────────────────────────────────────────────────────────
+
+  async detectFace(
+    pixelBuffer: Float32Array,
+    frameWidth: number,
+    frameHeight: number
+  ): Promise<FaceDetection | null> {
+    if (!this.detectionModel) throw new Error('Detection model not loaded');
+
+    const inputSize = MODEL_CONFIG.DETECTION_INPUT_SIZE;
+
+    // Resize frame to 320x320 for YOLOv8-face nano
+    const resizedBuffer = this.bilinearResize(
+      pixelBuffer, frameWidth, frameHeight, inputSize, inputSize
+    );
+
+    // Normalize to [0, 1]
+    const normalizedInput = new Float32Array(inputSize * inputSize * 3);
+    for (let i = 0; i < normalizedInput.length; i++) {
+      normalizedInput[i] = resizedBuffer[i] / 255.0;
+    }
+
+    // Run inference — YOLOv8-face output: [1, 20, 8400] (cx,cy,w,h,conf,lm1x,lm1y,...5landmarks)
+    const outputs = await this.detectionModel.run([normalizedInput]);
+    const detections = outputs[0] as Float32Array;
+
+    return this.parseYOLOFaceOutput(
+      detections, frameWidth, frameHeight, inputSize
+    );
+  }
+
+  private parseYOLOFaceOutput(
+    output: Float32Array,
+    origW: number,
+    origH: number,
+    inputSize: number
+  ): FaceDetection | null {
+    // output shape: [20, 8400] transposed → we iterate predictions
+    // Each col: [cx, cy, w, h, conf, lm0x, lm0y, lm1x, lm1y, ... lm4x, lm4y]
+    const numPredictions = 8400;
+    const numAttrs = 20; // 4 bbox + 1 conf + 5 landmarks * 2
+    let bestConf = MODEL_CONFIG.DETECTION_CONFIDENCE_THRESHOLD;
+    let bestFace: FaceDetection | null = null;
+
+    const scaleX = origW / inputSize;
+    const scaleY = origH / inputSize;
+
+    for (let i = 0; i < numPredictions; i++) {
+      const conf = output[4 * numPredictions + i]; // confidence at index 4
+      if (conf < bestConf) continue;
+
+      const cx = output[0 * numPredictions + i] * scaleX;
+      const cy = output[1 * numPredictions + i] * scaleY;
+      const w = output[2 * numPredictions + i] * scaleX;
+      const h = output[3 * numPredictions + i] * scaleY;
+
+      const x = cx - w / 2;
+      const y = cy - h / 2;
+
+      // 5 landmark points
+      const landmarks: FaceLandmarks = {
+        leftEye: {
+          x: output[5 * numPredictions + i] * scaleX,
+          y: output[6 * numPredictions + i] * scaleY,
+        },
+        rightEye: {
+          x: output[7 * numPredictions + i] * scaleX,
+          y: output[8 * numPredictions + i] * scaleY,
+        },
+        nose: {
+          x: output[9 * numPredictions + i] * scaleX,
+          y: output[10 * numPredictions + i] * scaleY,
+        },
+        leftMouth: {
+          x: output[11 * numPredictions + i] * scaleX,
+          y: output[12 * numPredictions + i] * scaleY,
+        },
+        rightMouth: {
+          x: output[13 * numPredictions + i] * scaleX,
+          y: output[14 * numPredictions + i] * scaleY,
+        },
+      };
+
+      bestConf = conf;
+      bestFace = { x, y, width: w, height: h, confidence: conf, landmarks };
+    }
+
+    return bestFace;
+  }
+
+  // ─── Face Quality Check ────────────────────────────────────────────────────
+
+  checkFaceQuality(
+    pixelBuffer: Float32Array,
+    face: FaceDetection,
+    frameWidth: number,
+    frameHeight: number
+  ): QualityResult {
+    // 1. Size check
+    const faceSize = Math.min(face.width, face.height);
+    if (faceSize < QUALITY_CONFIG.MIN_FACE_SIZE_PX) {
+      return { pass: false, score: 0, reason: 'Move closer to camera',
+               blur: 0, brightness: 0, faceSize };
+    }
+
+    // 2. Center check — face should be roughly centered
+    const centerX = face.x + face.width / 2;
+    const centerY = face.y + face.height / 2;
+    const dx = Math.abs(centerX / frameWidth - 0.5);
+    const dy = Math.abs(centerY / frameHeight - 0.5);
+    if (dx > QUALITY_CONFIG.FACE_CENTER_TOLERANCE ||
+        dy > QUALITY_CONFIG.FACE_CENTER_TOLERANCE) {
+      return { pass: false, score: 0.3, reason: 'Center your face',
+               blur: 0, brightness: 0, faceSize };
+    }
+
+    // 3. Extract face ROI pixels
+    const roiX = Math.max(0, Math.floor(face.x));
+    const roiY = Math.max(0, Math.floor(face.y));
+    const roiW = Math.min(frameWidth - roiX, Math.ceil(face.width));
+    const roiH = Math.min(frameHeight - roiY, Math.ceil(face.height));
+    const roi = this.extractROI(pixelBuffer, face, frameWidth, frameHeight);
+
+    // 4. Brightness check (mean pixel value)
+    const brightness = roi.reduce((a, b) => a + b, 0) / roi.length;
+    if (brightness < QUALITY_CONFIG.MIN_BRIGHTNESS) {
+      return { pass: false, score: 0.4, reason: 'Too dark — find better lighting',
+               blur: 0, brightness, faceSize };
+    }
+    if (brightness > QUALITY_CONFIG.MAX_BRIGHTNESS) {
+      return { pass: false, score: 0.4, reason: 'Too bright — avoid direct light',
+               blur: 0, brightness, faceSize };
+    }
+
+    // 5. Blur check — Laplacian variance (using integer bounds roiW and roiH)
+    const blur = this.laplacianVariance(roi, roiW, roiH);
+    if (blur < QUALITY_CONFIG.MIN_BLUR_SCORE) {
+      return { pass: false, score: 0.5, reason: 'Image too blurry — hold still',
+               blur, brightness, faceSize };
+    }
+
+    const score = Math.min(1.0,
+      (blur / 300) * 0.4 + ((brightness - 35) / 185) * 0.3 + (faceSize / 200) * 0.3
+    );
+
+    return { pass: true, score, blur, brightness, faceSize };
+  }
+
+  // Laplacian variance for blur detection
+  private laplacianVariance(pixels: Float32Array, width: number, height: number): number {
+    const kernel = [0, 1, 0, 1, -4, 1, 0, 1, 0];
+    let sum = 0, sumSq = 0;
+    const n = (width - 2) * (height - 2);
+
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        let laplacian = 0;
+        for (let ky = -1; ky <= 1; ky++) {
+          for (let kx = -1; kx <= 1; kx++) {
+            const pidx = (y + ky) * width + (x + kx);
+            // Average RGB channels for grayscale approximation
+            const gray = (pixels[pidx * 3] * 0.299 +
+                          pixels[pidx * 3 + 1] * 0.587 +
+                          pixels[pidx * 3 + 2] * 0.114);
+            laplacian += gray * kernel[(ky + 1) * 3 + (kx + 1)];
+          }
+        }
+        sum += laplacian;
+        sumSq += laplacian * laplacian;
+      }
+    }
+    const mean = sum / n;
+    return sumSq / n - mean * mean; // variance
+  }
+
+  // ─── Face Recognition ──────────────────────────────────────────────────────
+
+  async extractEmbedding(
+    pixelBuffer: Float32Array,
+    face: FaceDetection,
+    frameWidth: number
+  ): Promise<number[]> {
+    if (!this.recognitionModel) throw new Error('Recognition model not loaded');
+
+    // 1. Align face using 5-point landmarks (similarity transform)
+    const aligned = this.alignFace(pixelBuffer, face, frameWidth);
+
+    // 2. Normalize to [-1, 1] for AdaFace
+    const normalized = new Float32Array(112 * 112 * 3);
+    for (let i = 0; i < 112 * 112 * 3; i++) {
+      normalized[i] = (aligned[i] / 127.5) - 1.0;
+    }
+
+    // 3. Run AdaFace inference
+    const outputs = await this.recognitionModel.run([normalized]);
+    const rawEmbedding = Array.from(outputs[0] as Float32Array);
+
+    // 4. L2 normalize embedding
+    return this.l2Normalize(rawEmbedding);
+  }
+
+  async recognizeFace(
+    pixelBuffer: Float32Array,
+    face: FaceDetection,
+    frameWidth: number
+  ): Promise<RecognitionResult> {
+    const startTime = Date.now();
+
+    if (this.storedEmbeddings.length === 0) {
+      return { matched: false, confidence: 0, processingTimeMs: Date.now() - startTime };
+    }
+
+    const queryEmbedding = await this.extractEmbedding(pixelBuffer, face, frameWidth);
+
+    let bestMatch: FaceEmbedding | null = null;
+    let bestScore = -1;
+
+    for (const stored of this.storedEmbeddings) {
+      const similarity = this.cosineSimilarity(queryEmbedding, stored.embedding);
+      if (similarity > bestScore) {
+        bestScore = similarity;
+        bestMatch = stored;
+      }
+    }
+
+    const processingTimeMs = Date.now() - startTime;
+
+    if (bestScore >= this.recognitionThreshold && bestMatch) {
+      return {
+        matched: true,
+        userId: bestMatch.userId,
+        userName: bestMatch.userName,
+        employeeId: bestMatch.employeeId,
+        confidence: bestScore,
+        processingTimeMs,
+      };
+    }
+
+    return { matched: false, confidence: bestScore, processingTimeMs };
+  }
+
+  // ─── Math Utilities ────────────────────────────────────────────────────────
+
+  private cosineSimilarity(a: number[], b: number[]): number {
+    let dot = 0;
+    for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+    // Vectors are already L2-normalized, so dot product = cosine similarity
+    return dot;
+  }
+
+  private l2Normalize(v: number[]): number[] {
+    const norm = Math.sqrt(v.reduce((sum, x) => sum + x * x, 0));
+    return v.map(x => x / (norm + 1e-10));
+  }
+
+  // 5-point face alignment via similarity transform
+  private alignFace(
+    pixels: Float32Array,
+    face: FaceDetection,
+    frameWidth: number
+  ): Float32Array {
+    const frameHeight = pixels.length / (frameWidth * 3);
+    // Standard aligned face coordinates for 112x112 (ArcFace standard)
+    const refPoints = [
+      { x: 30.2946, y: 51.6963 }, // left eye
+      { x: 65.5318, y: 51.5014 }, // right eye
+      { x: 48.0252, y: 71.7366 }, // nose
+      { x: 33.5493, y: 92.3655 }, // left mouth
+      { x: 62.7299, y: 92.2041 }, // right mouth
+    ];
+    const srcPoints = [
+      face.landmarks.leftEye, face.landmarks.rightEye,
+      face.landmarks.nose, face.landmarks.leftMouth, face.landmarks.rightMouth,
+    ];
+
+    // Estimate similarity transform (scale + rotation + translation)
+    const { scale, angle, tx, ty } = this.estimateSimilarityTransform(srcPoints, refPoints);
+
+    // Apply transform and sample 112x112 crop
+    const output = new Float32Array(112 * 112 * 3);
+    const cos = Math.cos(-angle) * scale;
+    const sin = Math.sin(-angle) * scale;
+
+    for (let dy = 0; dy < 112; dy++) {
+      for (let dx = 0; dx < 112; dx++) {
+        // Inverse transform: dst → src
+        const srcX = cos * (dx - tx) - sin * (dy - ty);
+        const srcY = sin * (dx - tx) + cos * (dy - ty);
+
+        const sx = Math.round(srcX);
+        const sy = Math.round(srcY);
+        const dstIdx = (dy * 112 + dx) * 3;
+
+        if (sx >= 0 && sx < frameWidth && sy >= 0 && sy < frameHeight) {
+          const srcIdx = (sy * frameWidth + sx) * 3;
+          output[dstIdx] = pixels[srcIdx];
+          output[dstIdx + 1] = pixels[srcIdx + 1];
+          output[dstIdx + 2] = pixels[srcIdx + 2];
+        }
+      }
+    }
+    return output;
+  }
+
+  private estimateSimilarityTransform(src: Point[], dst: Point[]) {
+    // Mean-centered similarity transform estimation
+    const srcMean = { x: src.reduce((s, p) => s + p.x, 0) / src.length,
+                      y: src.reduce((s, p) => s + p.y, 0) / src.length };
+    const dstMean = { x: dst.reduce((s, p) => s + p.x, 0) / dst.length,
+                      y: dst.reduce((s, p) => s + p.y, 0) / dst.length };
+
+    let num = 0, den = 0;
+    for (let i = 0; i < src.length; i++) {
+      const sx = src[i].x - srcMean.x, sy = src[i].y - srcMean.y;
+      const dx = dst[i].x - dstMean.x, dy = dst[i].y - dstMean.y;
+      num += sx * dy - sy * dx;
+      den += sx * dx + sy * dy;
+    }
+
+    const angle = Math.atan2(num, den);
+    const scale = Math.sqrt(num * num + den * den) /
+                  src.reduce((s, p) => s + (p.x - srcMean.x) ** 2 + (p.y - srcMean.y) ** 2, 0);
+
+    return {
+      angle,
+      scale,
+      tx: dstMean.x - scale * (Math.cos(angle) * srcMean.x - Math.sin(angle) * srcMean.y),
+      ty: dstMean.y - scale * (Math.sin(angle) * srcMean.x + Math.cos(angle) * srcMean.y),
+    };
+  }
+
+  // Bilinear resize
+  private bilinearResize(
+    src: Float32Array, srcW: number, srcH: number,
+    dstW: number, dstH: number
+  ): Float32Array {
+    const dst = new Float32Array(dstW * dstH * 3);
+    const scaleX = srcW / dstW, scaleY = srcH / dstH;
+
+    for (let dy = 0; dy < dstH; dy++) {
+      for (let dx = 0; dx < dstW; dx++) {
+        const srcX = dx * scaleX, srcY = dy * scaleY;
+        const x0 = Math.floor(srcX), y0 = Math.floor(srcY);
+        const x1 = Math.min(x0 + 1, srcW - 1), y1 = Math.min(y0 + 1, srcH - 1);
+        const fx = srcX - x0, fy = srcY - y0;
+
+        for (let c = 0; c < 3; c++) {
+          dst[(dy * dstW + dx) * 3 + c] =
+            (1 - fx) * (1 - fy) * src[(y0 * srcW + x0) * 3 + c] +
+            fx * (1 - fy) * src[(y0 * srcW + x1) * 3 + c] +
+            (1 - fx) * fy * src[(y1 * srcW + x0) * 3 + c] +
+            fx * fy * src[(y1 * srcW + x1) * 3 + c];
+        }
+      }
+    }
+    return dst;
+  }
+
+  private extractROI(
+    pixels: Float32Array,
+    face: FaceDetection,
+    frameWidth: number,
+    frameHeight: number
+  ): Float32Array {
+    const x = Math.max(0, Math.floor(face.x));
+    const y = Math.max(0, Math.floor(face.y));
+    const w = Math.min(frameWidth - x, Math.ceil(face.width));
+    const h = Math.min(frameHeight - y, Math.ceil(face.height));
+    const roi = new Float32Array(w * h * 3);
+
+    for (let row = 0; row < h; row++) {
+      for (let col = 0; col < w; col++) {
+        const srcIdx = ((y + row) * frameWidth + (x + col)) * 3;
+        const dstIdx = (row * w + col) * 3;
+        roi[dstIdx] = pixels[srcIdx];
+        roi[dstIdx + 1] = pixels[srcIdx + 1];
+        roi[dstIdx + 2] = pixels[srcIdx + 2];
+      }
+    }
+    return roi;
+  }
+
+  // ─── Embedding Management ──────────────────────────────────────────────────
+
+  loadEmbeddings(embeddings: FaceEmbedding[]): void {
+    this.storedEmbeddings = embeddings;
+    console.log(`[FaceEngine] Loaded ${embeddings.length} face embeddings`);
+  }
+
+  addEmbedding(embedding: FaceEmbedding): void {
+    // Remove existing enrollment for same user if any
+    this.storedEmbeddings = this.storedEmbeddings.filter(
+      e => e.userId !== embedding.userId
+    );
+    this.storedEmbeddings.push(embedding);
+  }
+
+  getEmbeddingCount(): number {
+    return this.storedEmbeddings.length;
+  }
+
+  destroy(): void {
+    this.detectionModel = null;
+    this.recognitionModel = null;
+    this.isInitialized = false;
+  }
+}
+
+export const FaceEngine = new FaceEngineService();

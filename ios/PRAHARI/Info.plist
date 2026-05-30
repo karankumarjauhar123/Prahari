@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- ios/PRAHARI/Info.plist -->
+<plist version="1.0">
+<dict>
+
+  <!-- ─── App Identity ──────────────────────────────────────────────── -->
+  <key>CFBundleDisplayName</key>       <string>PRAHARI</string>
+  <key>CFBundleIdentifier</key>        <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+  <key>CFBundleName</key>              <string>$(PRODUCT_NAME)</string>
+  <key>CFBundleVersion</key>           <string>1</string>
+  <key>CFBundleShortVersionString</key><string>1.0.0</string>
+  <key>CFBundlePackageType</key>       <string>APPL</string>
+  <key>CFBundleSignature</key>         <string>????</string>
+  <key>CFBundleExecutable</key>        <string>$(EXECUTABLE_NAME)</string>
+  <key>CFBundleDevelopmentRegion</key> <string>en</string>
+
+  <!-- ─── Privacy Permissions ──────────────────────────────────────── -->
+  <key>NSCameraUsageDescription</key>
+  <string>PRAHARI needs camera access to capture your face for secure identity verification. No images are stored on device or transmitted.</string>
+
+  <key>NSFaceIDUsageDescription</key>
+  <string>PRAHARI uses Face ID to protect the encrypted key vault that stores face embeddings.</string>
+
+  <!-- NOT required — tell App Store reviewers we don't use photos -->
+  <key>NSPhotoLibraryUsageDescription</key>
+  <string>Not required by this app.</string>
+
+  <!-- ─── Orientation — Portrait only ──────────────────────────────── -->
+  <key>UISupportedInterfaceOrientations</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+  </array>
+  <key>UISupportedInterfaceOrientations~ipad</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+    <string>UIInterfaceOrientationPortraitUpsideDown</string>
+  </array>
+
+  <!-- ─── Status Bar ────────────────────────────────────────────────── -->
+  <key>UIStatusBarStyle</key>
+  <string>UIStatusBarStyleLightContent</string>
+  <key>UIViewControllerBasedStatusBarAppearance</key>
+  <false/>
+
+  <!-- ─── Required Device Capabilities ────────────────────────────── -->
+  <key>UIRequiredDeviceCapabilities</key>
+  <array>
+    <string>armv7</string>
+    <string>front-facing-camera</string>
+  </array>
+  <key>MinimumOSVersion</key>
+  <string>12.0</string>
+
+  <!-- ─── React Native ──────────────────────────────────────────────── -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <!-- Allow localhost for Metro dev server -->
+    <key>NSExceptionDomains</key>
+    <dict>
+      <key>localhost</key>
+      <dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key>
+        <true/>
+      </dict>
+    </dict>
+  </dict>
+
+  <!-- ─── Background Modes ─────────────────────────────────────────── -->
+  <key>UIBackgroundModes</key>
+  <array>
+    <!-- Allow background sync when internet restores -->
+    <string>fetch</string>
+    <string>remote-notification</string>
+  </array>
+
+  <!-- ─── File sharing (disabled for security) ─────────────────────── -->
+  <key>UIFileSharingEnabled</key>
+  <false/>
+  <key>LSSupportsOpeningDocumentsInPlace</key>
+  <false/>
+
+</dict>
+</plist>
