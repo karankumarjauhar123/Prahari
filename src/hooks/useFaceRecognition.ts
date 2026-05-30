@@ -36,6 +36,7 @@ export const useFaceRecognition = (props: Props) => {
   const passiveScoreRef = useRef(0);
   const activeCompleteRef = useRef(false);
   const frameCountRef = useRef(0);
+  const resetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const updateState = (newState: AuthState) => {
     stateRef.current = newState;
@@ -78,13 +79,20 @@ export const useFaceRecognition = (props: Props) => {
       }
     };
     init();
+
+    // Cleanup timeouts on unmount
+    return () => {
+      if (resetTimeoutRef.current) {
+        clearTimeout(resetTimeoutRef.current);
+      }
+    };
   }, []);
 
   // ─── Main frame processor callback ───────────────────────────────────────
 
   const processFrame = useCallback(async (buffer: ArrayBuffer, width: number, height: number) => {
     if (!isReady || isProcessingRef.current) return;
-    if (stateRef.current === 'SUCCESS' || stateRef.current === 'FAILED') return;
+    if (stateRef.current === 'SUCCESS' || stateRef.current === 'FAILED' || stateRef.current === 'SPOOF_DETECTED') return;
 
     isProcessingRef.current = true;
     frameCountRef.current++;
@@ -141,6 +149,13 @@ export const useFaceRecognition = (props: Props) => {
       if (passiveScoreRef.current < 0.35) {
         updateState('SPOOF_DETECTED');
         props.onFailed('Spoof attempt detected');
+        // Auto-reset after 3 seconds so user can try again
+        resetTimeoutRef.current = setTimeout(() => {
+          updateState('WAITING_FACE');
+          activeCompleteRef.current = false;
+          passiveScoreRef.current = 0;
+          props.onChallengeChange(null);
+        }, 3000);
         return;
       }
 
@@ -195,7 +210,7 @@ export const useFaceRecognition = (props: Props) => {
           props.onSuccess(result.userName, result.confidence);
 
           // Reset for next auth after 3 seconds
-          setTimeout(() => {
+          resetTimeoutRef.current = setTimeout(() => {
             updateState('WAITING_FACE');
             activeCompleteRef.current = false;
             passiveScoreRef.current = 0;
@@ -205,7 +220,7 @@ export const useFaceRecognition = (props: Props) => {
           updateState('FAILED');
           props.onFailed('Face not recognized');
           // Reset after 2 seconds
-          setTimeout(() => {
+          resetTimeoutRef.current = setTimeout(() => {
             updateState('WAITING_FACE');
             activeCompleteRef.current = false;
             passiveScoreRef.current = 0;

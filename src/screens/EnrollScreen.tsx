@@ -42,6 +42,7 @@ export const EnrollScreen: React.FC = () => {
   });
   const isCapturingRef = useRef(false);
   const capturedEmbeddingsRef = useRef<number[][]>([]);
+  const stepRef = useRef<EnrollState['step']>('FORM');
 
   const handleCaptureFrameData = useCallback(async (buffer: ArrayBuffer, width: number, height: number) => {
     if (isCapturingRef.current) return;
@@ -60,10 +61,14 @@ export const EnrollScreen: React.FC = () => {
       const embedding = await FaceEngine.extractEmbedding(pixels, face, width);
       capturedEmbeddingsRef.current.push(embedding);
 
-      setState(prev => ({
-        ...prev,
-        capturedCount: capturedEmbeddingsRef.current.length,
-      }));
+      setState(prev => {
+        const next = {
+          ...prev,
+          capturedCount: capturedEmbeddingsRef.current.length,
+        };
+        stepRef.current = next.step;
+        return next;
+      });
 
       if (capturedEmbeddingsRef.current.length >= CAPTURE_COUNT) {
         await finalizeEnrollment(capturedEmbeddingsRef.current);
@@ -78,16 +83,20 @@ export const EnrollScreen: React.FC = () => {
 
   const frameProcessor = useFrameProcessor((frame) => {
     'worklet';
-    if (state.step === 'CAPTURE') {
-      const width = frame.width;
-      const height = frame.height;
-      const buffer = frame.toArrayBuffer();
-      runOnJS(handleCaptureFrameData)(buffer, width, height);
-    }
-  }, [state.step, handleCaptureFrameData]);
+    // NOTE: Use stepRef instead of state.step — worklets run on a separate thread
+    // and cannot access React state directly
+    const width = frame.width;
+    const height = frame.height;
+    const buffer = frame.toArrayBuffer();
+    runOnJS(handleCaptureFrameData)(buffer, width, height);
+  }, [handleCaptureFrameData]);
 
   const finalizeEnrollment = async (embeddings: number[][]) => {
-    setState(prev => ({ ...prev, step: 'PROCESSING' }));
+    setState(prev => {
+      const next = { ...prev, step: 'PROCESSING' as const };
+      stepRef.current = next.step;
+      return next;
+    });
 
     try {
       // Average the 5 embeddings → more robust than single capture
@@ -132,7 +141,9 @@ export const EnrollScreen: React.FC = () => {
     if (!name.trim()) { Alert.alert('Error', 'Please enter name'); return; }
     if (!employeeId.trim()) { Alert.alert('Error', 'Please enter Employee ID'); return; }
     capturedEmbeddingsRef.current = [];
-    setState({ step: 'CAPTURE', capturedCount: 0, embeddings: [] });
+    const next: EnrollState = { step: 'CAPTURE', capturedCount: 0, embeddings: [] };
+    stepRef.current = next.step;
+    setState(next);
   };
 
   // ─── Render ───────────────────────────────────────────────────────────────
@@ -186,7 +197,6 @@ export const EnrollScreen: React.FC = () => {
             style={StyleSheet.absoluteFill}
             device={device} isActive={state.step === 'CAPTURE'}
             frameProcessor={frameProcessor}
-            frameProcessorFps={2}
             pixelFormat="rgb"
           />
         )}

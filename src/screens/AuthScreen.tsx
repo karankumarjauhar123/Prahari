@@ -4,7 +4,7 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import {
   View, Text, StyleSheet, Dimensions, TouchableOpacity,
-  Animated, StatusBar, Platform,
+  Animated, StatusBar,
 } from 'react-native';
 import {
   Camera, useCameraDevice, useCameraPermission,
@@ -12,7 +12,7 @@ import {
 } from 'react-native-vision-camera';
 import { useSharedValue, runOnJS } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Rect, Circle, Path, Defs, Mask, G } from 'react-native-svg';
+import Svg, { Circle } from 'react-native-svg';
 import { FaceOverlay } from '../components/FaceOverlay';
 import { LivenessChallenge, StatusBadge } from '../components/LivenessChallenge';
 import { useFaceRecognition } from '../hooks/useFaceRecognition';
@@ -177,7 +177,6 @@ export const AuthScreen: React.FC = () => {
         device={device}
         isActive={true}
         frameProcessor={frameProcessor}
-        frameProcessorFps={15}
         photo={false}
         video={false}
         audio={false}
