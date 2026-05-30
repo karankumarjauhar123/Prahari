@@ -1,196 +1,45 @@
-name: Build PRAHARI APK
-
+name: Build Android APK 📱
 on:
   push:
-    branches: [ main ]
-  workflow_dispatch:
-
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
 jobs:
-  build:
+  build-android:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v4
-
-    - name: Unzip and prepare project
-      run: |
-        echo "📦 Extracting PRAHARI_complete.zip..."
-        unzip -q PRAHARI_complete.zip
-        
-        # Navigate into PRAHARI folder if it exists and copy files
-        if [ -d "PRAHARI" ]; then
-          echo "✅ Found PRAHARI folder, moving contents to root..."
-          shopt -s dotglob
-          mv PRAHARI/* .
-          rmdir PRAHARI
-        fi
-        
-        echo "✅ Project structure ready:"
-        ls -la | head -20
-
-    - name: Setup Java 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-        cache: 'gradle'
-
-    - name: Setup Node.js 20
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-
-    - name: Install Node dependencies
-      run: |
-        if [ -f "package-lock.json" ]; then
-          npm ci
-        elif [ -f "package.json" ]; then
-          npm install --legacy-peer-deps --no-optional
-        else
-          echo "❌ No package.json found"
-          exit 1
-        fi
-
-    - name: Download ML Models
-      continue-on-error: true
-      run: |
-        mkdir -p android/app/src/main/assets/models
-        
-        echo "⏳ Downloading face_mesh_lite..."
-        wget -q --timeout=30 \
-          "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task" \
-          -O android/app/src/main/assets/models/face_mesh_lite.tflite || \
-          python3 -c "open('android/app/src/main/assets/models/face_mesh_lite.tflite','wb').write(bytes([0x18,0x00,0x00,0x00,0x54,0x46,0x4C,0x33]))"
-        
-        echo "⏳ Downloading face_detection..."
-        wget -q --timeout=30 \
-          "https://github.com/google/mediapipe/raw/master/mediapipe/modules/face_detection/face_detection_short_range.tflite" \
-          -O android/app/src/main/assets/models/yolov8_face_nano_int8.tflite || \
-          python3 -c "open('android/app/src/main/assets/models/yolov8_face_nano_int8.tflite','wb').write(bytes([0x18,0x00,0x00,0x00,0x54,0x46,0x4C,0x33]))"
-        
-        echo "⏳ Downloading mobilefacenet..."
-        wget -q --timeout=30 \
-          "https://storage.googleapis.com/download.tensorflow.org/models/tflite/mobilefacenet_int8.tflite" \
-          -O android/app/src/main/assets/models/adaface_mobilone_s0_int8.tflite || \
-          python3 -c "open('android/app/src/main/assets/models/adaface_mobilone_s0_int8.tflite','wb').write(bytes([0x18,0x00,0x00,0x00,0x54,0x46,0x4C,0x33]))"
-        
-        python3 -c "open('android/app/src/main/assets/models/antispoof_mobilenet_int8.tflite','wb').write(bytes([0x18,0x00,0x00,0x00,0x54,0x46,0x4C,0x33]))"
-        
-        echo "✅ All model placeholders ready"
-        ls -la android/app/src/main/assets/models/
-
-    - name: Configure Gradle
-      working-directory: android
-      run: |
-        echo "🔧 Configuring Gradle environment..."
-        
-        # Ensure gradlew exists and is executable
-        if [ ! -f "gradlew" ]; then
-          echo "⚠️ gradlew missing, downloading..."
-          wget -q https://services.gradle.org/distributions/gradle-8.6-bin.zip
-          unzip -q gradle-8.6-bin.zip
-          
-          mkdir -p gradle/wrapper
-          cat > gradle/wrapper/gradle-wrapper.properties << 'EOF'
-        distributionBase=GRADLE_USER_HOME
-        distributionPath=wrapper/dists
-        distributionUrl=https\://services.gradle.org/distributions/gradle-8.6-bin.zip
-        zipStoreBase=GRADLE_USER_HOME
-        zipStorePath=wrapper/dists
-        EOF
-          
-          # Create wrapper jar link
-          ln -s ../../gradle-8.6/lib/gradle-*.jar gradle/wrapper/gradle-wrapper.jar 2>/dev/null || true
-          
-          cat > gradlew << 'EOF'
-        #!/bin/bash
-        cd "$(dirname "$0")"
-        exec gradle-8.6/bin/gradle "$@"
-        EOF
-          
-          chmod +x gradlew
-          echo "✅ Gradle configured"
-        else
-          chmod +x gradlew
-          echo "✅ gradlew already configured"
-        fi
-        
-        ls -la gradlew
-
-    - name: Build Debug APK
-      working-directory: android
-      run: |
-        echo "🚀 Starting APK build (this may take 2-3 minutes)..."
-        
-        ./gradlew assembleDebug \
-          --no-daemon \
-          --no-watch-fs \
-          --max-workers=2 \
-          -Dorg.gradle.jvmargs="-Xmx3g -XX:+UseG1GC" \
-          -Dorg.gradle.parallel=true \
-          -Dkotlin.compiler.execution.strategy=in-process \
-          2>&1 | tee build.log
-        
-        BUILD_RESULT=${PIPESTATUS[0]}
-        
-        if [ $BUILD_RESULT -ne 0 ]; then
-          echo "❌ Build failed! Last 100 lines:"
-          tail -100 build.log
-          exit $BUILD_RESULT
-        fi
-        
-        echo "✅ Build completed"
-
-    - name: Verify APK
-      run: |
-        APK="android/app/build/outputs/apk/debug/app-debug.apk"
-        
-        if [ ! -f "$APK" ]; then
-          echo "❌ APK not found at $APK"
-          echo "📋 Searching for APK files..."
-          find android -name "*.apk" -type f 2>/dev/null
-          exit 1
-        fi
-        
-        SIZE=$(du -h "$APK" | cut -f1)
-        echo "🎉
-        echo "🎉 APK built successfully!"
-        echo "📦 APK Size: $SIZE"
-        ls -lh "$APK"
-
-    - name: Upload APK Artifact
-      if: success()
-      uses: actions/upload-artifact@v4
-      with:
-        name: PRAHARI-debug-apk
-        path: android/app/build/outputs/apk/debug/app-debug.apk
-        retention-days: 30
-        if-no-files-found: error
-
-    - name: Build Summary
-      if: always()
-      run: |
-        echo "═══════════════════════════════════════"
-        echo "🔍 BUILD SUMMARY"
-        echo "═══════════════════════════════════════"
-        
-        if [ -f "android/build.log" ]; then
-          echo ""
-          echo "📋 Build Log (last 50 lines):"
-          tail -50 android/build.log
-        fi
-        
-        APK="android/app/build/outputs/apk/debug/app-debug.apk"
-        if [ -f "$APK" ]; then
-          echo ""
-          echo "✅ BUILD SUCCESSFUL"
-          echo "📦 APK: $(basename $APK)"
-          echo "📊 Size: $(du -h $APK | cut -f1)"
-        else
-          echo ""
-          echo "❌ BUILD FAILED"
-          echo "APK not found"
-        fi
-        
-        echo
+      - name: Checkout Repository 📂
+        uses: actions/checkout@v4
+      - name: Setup Java JDK 17 ☕
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+      - name: Setup Node.js 18.x 🟢
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18.x'
+          cache: 'npm'
+      - name: Install Dependencies 📦
+        run: |
+          npm install --legacy-peer-deps
+      - name: Setup Gradle Cache 💾
+        uses: gradle/actions/setup-gradle@v3
+      - name: Make Gradle Daemon Executable 🔓
+        run: chmod +x android/gradlew
+      - name: Build Android Debug APK 🛠️
+        run: |
+          cd android
+          ./gradlew assembleDebug --no-daemon
+      - name: Upload Debug APK Artifact 📤
+        uses: actions/upload-artifact@v4
+        with:
+          name: prahari-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
