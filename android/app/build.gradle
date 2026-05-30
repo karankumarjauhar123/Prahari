@@ -58,14 +58,16 @@ android {
         }
         release {
             minifyEnabled true
+            shrinkResources true
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
             signingConfig signingConfigs.release
         }
     }
 
-    packagingOptions {
-        pickFirst '**/libc++_shared.so'
-        pickFirst '**/libfbjni.so'
+    packaging {
+        resources {
+            pickFirsts += ['**/libc++_shared.so', '**/libfbjni.so']
+        }
     }
 }
 
@@ -74,11 +76,7 @@ dependencies {
     implementation("com.facebook.react:react-android")
     implementation("com.facebook.react:hermes-android")
 
-    // TensorFlow Lite — for model inference
-    implementation 'org.tensorflow:tensorflow-lite:2.14.0'
-    implementation 'org.tensorflow:tensorflow-lite-gpu:2.14.0'          // GPU delegate
-    implementation 'org.tensorflow:tensorflow-lite-support:0.4.4'       // Image processing utils
-    implementation 'org.tensorflow:tensorflow-lite-metadata:0.4.4'
+    // NOTE: TFLite is provided by react-native-fast-tflite — do NOT add native TFLite deps here
 
     // SQLCipher for encrypted database
     implementation 'net.zetetic:android-database-sqlcipher:4.5.4'

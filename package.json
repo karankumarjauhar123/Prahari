@@ -32,6 +32,7 @@
     "@react-native-async-storage/async-storage": "^1.21.0",
     "react-native-keychain": "^8.1.2",
     "react-native-permissions": "^4.1.0",
+    "react-native-worklets-core": "^1.0.0",
     "uuid": "^9.0.0"
   },
   "devDependencies": {
@@ -43,6 +44,9 @@
     "@tsconfig/react-native": "^3.0.0",
     "@types/react": "^18.2.6",
     "@types/react-native-sqlite-storage": "^6.0.4",
+    "@types/uuid": "^9.0.0",
+    "babel-plugin-module-resolver": "^5.0.0",
+    "jest": "^29.6.3",
     "typescript": "5.0.4"
   }
 }

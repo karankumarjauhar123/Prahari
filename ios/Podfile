@@ -15,12 +15,8 @@ target 'PRAHARI' do
     :app_path => "#{Pod::Config.instance.installation_root}/.."
   )
 
-  # TensorFlow Lite — for model inference
-  pod 'TensorFlowLiteC', '~> 2.14.0'
-  pod 'TensorFlowLiteSwift', '~> 2.14.0'
-
-  # Vision Camera
-  pod 'VisionCamera', :path => '../node_modules/react-native-vision-camera'
+  # NOTE: TFLite is provided by react-native-fast-tflite — do NOT add TFLite pods manually
+  # NOTE: VisionCamera is autolinked via native_modules — no manual pod needed
 
   target 'PRAHARITests' do
     inherit! :complete
