@@ -33,6 +33,11 @@ jobs:
         with:
           node-version: '18.x'
 
+      - name: Clean npm Cache 🧹
+        run: |
+          npm cache clean --force
+          rm -rf node_modules package-lock.json
+
       - name: Install Dependencies 📦
         run: |
           npm install --legacy-peer-deps
