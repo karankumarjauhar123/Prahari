@@ -1,16 +1,16 @@
 // src/components/FaceOverlay.tsx
-// SVG face oval guide with animated quality ring
+// SVG face oval guide with animated quality ring — Premium design
 
-import React, { useEffect, useRef } from 'react';
+import React from 'react';
 import {
-  View, StyleSheet, Dimensions, Animated,
+  View, StyleSheet, Dimensions, Animated, Text,
 } from 'react-native';
 import Svg, {
   Defs, Mask, Rect, Ellipse, Circle, G,
 } from 'react-native-svg';
+import { UI_COLORS } from '../constants';
 
 const { width: W, height: H } = Dimensions.get('window');
-const AnimatedEllipse = Animated.createAnimatedComponent(Ellipse);
 
 interface Props {
   ovalWidth: number;
@@ -36,6 +36,10 @@ export const FaceOverlay: React.FC<Props> = ({
     Math.sqrt((3 * qualityRx + qualityRy) * (qualityRx + 3 * qualityRy)));
   const strokeDashoffset = circumference * (1 - quality);
 
+  const qualityColor = quality > 0.7 ? UI_COLORS.SUCCESS
+    : quality > 0.4 ? UI_COLORS.WARNING
+    : UI_COLORS.ERROR;
+
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="none">
       <Svg width={W} height={H}>
@@ -49,8 +53,18 @@ export const FaceOverlay: React.FC<Props> = ({
         {/* Dark overlay with oval hole */}
         <Rect
           x="0" y="0" width={W} height={H}
-          fill="rgba(10,10,20,0.68)"
+          fill="rgba(8,8,26,0.72)"
           mask="url(#ovalMask)"
+        />
+
+        {/* Outer glow ring */}
+        <Ellipse
+          cx={cx} cy={cy}
+          rx={rx + 22} ry={ry + 22}
+          fill="none"
+          stroke={strokeColor}
+          strokeWidth={0.5}
+          opacity={0.15}
         />
 
         {/* Oval border */}
@@ -58,8 +72,18 @@ export const FaceOverlay: React.FC<Props> = ({
           cx={cx} cy={cy} rx={rx} ry={ry}
           fill="none"
           stroke={strokeColor}
-          strokeWidth={2.5}
-          opacity={0.9}
+          strokeWidth={2}
+          opacity={0.85}
+        />
+
+        {/* Inner subtle ring */}
+        <Ellipse
+          cx={cx} cy={cy}
+          rx={rx - 6} ry={ry - 6}
+          fill="none"
+          stroke={strokeColor}
+          strokeWidth={0.5}
+          opacity={0.2}
         />
 
         {/* Quality progress ring */}
@@ -68,7 +92,7 @@ export const FaceOverlay: React.FC<Props> = ({
             cx={cx} cy={cy}
             rx={qualityRx} ry={qualityRy}
             fill="none"
-            stroke={quality > 0.7 ? '#00C897' : quality > 0.4 ? '#FFB347' : '#FF4757'}
+            stroke={qualityColor}
             strokeWidth={3}
             strokeDasharray={`${circumference}`}
             strokeDashoffset={strokeDashoffset}
@@ -78,19 +102,47 @@ export const FaceOverlay: React.FC<Props> = ({
           />
         )}
 
-        {/* Corner accent dots */}
-        {[
-          [cx - rx, cy - ry * 0.6],
-          [cx - rx, cy + ry * 0.6],
-          [cx + rx, cy - ry * 0.6],
-          [cx + rx, cy + ry * 0.6],
-        ].map(([x, y], i) => (
-          <Circle
-            key={i} cx={x} cy={y} r={4}
-            fill={strokeColor} opacity={0.7}
-          />
-        ))}
+        {/* Corner accent markers (tech scanner feel) */}
+        {/* Top-left */}
+        <G>
+          <Circle cx={cx - rx * 0.85} cy={cy - ry * 0.85} r={2} fill={strokeColor} opacity={0.5} />
+          <Circle cx={cx + rx * 0.85} cy={cy - ry * 0.85} r={2} fill={strokeColor} opacity={0.5} />
+          <Circle cx={cx - rx * 0.85} cy={cy + ry * 0.85} r={2} fill={strokeColor} opacity={0.5} />
+          <Circle cx={cx + rx * 0.85} cy={cy + ry * 0.85} r={2} fill={strokeColor} opacity={0.5} />
+        </G>
+
+        {/* Crosshair dots at center */}
+        <Circle cx={cx} cy={cy - ry - 8} r={2} fill={strokeColor} opacity={0.4} />
+        <Circle cx={cx} cy={cy + ry + 8} r={2} fill={strokeColor} opacity={0.4} />
+        <Circle cx={cx - rx - 8} cy={cy} r={2} fill={strokeColor} opacity={0.4} />
+        <Circle cx={cx + rx + 8} cy={cy} r={2} fill={strokeColor} opacity={0.4} />
       </Svg>
+
+      {/* Quality label */}
+      {quality > 0 && (
+        <View style={[styles.qualityLabel, { top: cy + ry + 24 }]}>
+          <View style={[styles.qualityDot, { backgroundColor: qualityColor }]} />
+          <Text style={[styles.qualityText, { color: qualityColor }]}>
+            {Math.round(quality * 100)}% Quality
+          </Text>
+        </View>
+      )}
     </View>
   );
 };
+
+const styles = StyleSheet.create({
+  qualityLabel: {
+    position: 'absolute',
+    alignSelf: 'center',
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderRadius: 10, paddingHorizontal: 10, paddingVertical: 4,
+  },
+  qualityDot: {
+    width: 6, height: 6, borderRadius: 3,
+  },
+  qualityText: {
+    fontSize: 11, fontWeight: '700', letterSpacing: 0.5,
+  },
+});

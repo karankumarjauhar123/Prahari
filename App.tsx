@@ -1,13 +1,11 @@
 // App.tsx — Navigation root + app initialization
 
 import React, { useEffect, useState } from 'react';
-import { StatusBar, View, Text, StyleSheet, ActivityIndicator } from 'react-native';
+import { StatusBar, View, Text, StyleSheet, ActivityIndicator, Animated } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { Amplify } from 'aws-amplify';
-import awsConfig from './aws-exports';
 import { DatabaseService } from './src/services/DatabaseService';
 import { SyncService } from './src/services/SyncService';
 import { HomeScreen } from './src/screens/HomeScreen';
@@ -30,20 +28,29 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 const App: React.FC = () => {
   const [isBootstrapped, setIsBootstrapped] = useState(false);
   const [bootError, setBootError] = useState<string | null>(null);
+  const logoAnim = React.useRef(new Animated.Value(0)).current;
+  const pulseAnim = React.useRef(new Animated.Value(0.4)).current;
 
   useEffect(() => {
+    // Start logo animation
+    Animated.timing(logoAnim, {
+      toValue: 1, duration: 800, useNativeDriver: true,
+    }).start();
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, { toValue: 1, duration: 1000, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 0.4, duration: 1000, useNativeDriver: true }),
+      ])
+    ).start();
     bootstrap();
   }, []);
 
   const bootstrap = async () => {
     try {
-      // 1. Configure AWS Amplify (offline-safe — no network call at startup)
-      Amplify.configure(awsConfig);
-
-      // 2. Initialize encrypted local database
+      // 1. Initialize encrypted local database
       await DatabaseService.initialize();
 
-      // 3. Start sync service — listens for connectivity events
+      // 2. Start sync service — listens for connectivity events
       await SyncService.initialize();
 
       setIsBootstrapped(true);
@@ -56,8 +63,12 @@ const App: React.FC = () => {
   if (bootError) {
     return (
       <View style={styles.bootScreen}>
-        <Text style={styles.bootError}>⚠️ {bootError}</Text>
-        <Text style={styles.bootHint}>Please restart the application</Text>
+        <StatusBar barStyle="light-content" backgroundColor={UI_COLORS.BACKGROUND} />
+        <View style={styles.errorCard}>
+          <Text style={styles.errorIcon}>⚠️</Text>
+          <Text style={styles.bootError}>{bootError}</Text>
+          <Text style={styles.bootHint}>Please restart the application</Text>
+        </View>
       </View>
     );
   }
@@ -65,9 +76,27 @@ const App: React.FC = () => {
   if (!isBootstrapped) {
     return (
       <View style={styles.bootScreen}>
-        <Text style={styles.bootTitle}>PRAHARI</Text>
-        <ActivityIndicator color={UI_COLORS.ACCENT} size="large" style={{ marginTop: 24 }} />
-        <Text style={styles.bootSubtitle}>Loading secure vault...</Text>
+        <StatusBar barStyle="light-content" backgroundColor={UI_COLORS.BACKGROUND} />
+        {/* Subtle background glow */}
+        <View style={styles.bootGlow} />
+
+        <Animated.View style={[styles.bootLogoWrap, {
+          opacity: logoAnim,
+          transform: [{ scale: logoAnim.interpolate({ inputRange: [0, 1], outputRange: [0.8, 1] }) }],
+        }]}>
+          <View style={styles.shieldIcon}>
+            <Text style={styles.shieldEmoji}>🛡️</Text>
+          </View>
+          <Text style={styles.bootTitle}>PRAHARI</Text>
+          <Text style={styles.bootTagline}>Secure • Offline • Edge AI</Text>
+        </Animated.View>
+
+        <View style={styles.bootLoaderWrap}>
+          <Animated.View style={[styles.bootLoaderBar, { opacity: pulseAnim }]} />
+          <Text style={styles.bootSubtitle}>Initializing secure vault...</Text>
+        </View>
+
+        <Text style={styles.bootVersion}>v1.0.0 — Hackathon 7.0</Text>
       </View>
     );
   }
@@ -106,14 +135,55 @@ const styles = StyleSheet.create({
     flex: 1, backgroundColor: UI_COLORS.BACKGROUND,
     alignItems: 'center', justifyContent: 'center',
   },
+  bootGlow: {
+    position: 'absolute',
+    width: 300, height: 300, borderRadius: 150,
+    backgroundColor: 'rgba(233,69,96,0.06)',
+    top: '25%',
+  },
+  bootLogoWrap: {
+    alignItems: 'center',
+  },
+  shieldIcon: {
+    width: 80, height: 80, borderRadius: 40,
+    backgroundColor: 'rgba(233,69,96,0.12)',
+    alignItems: 'center', justifyContent: 'center',
+    marginBottom: 20,
+    borderWidth: 1, borderColor: 'rgba(233,69,96,0.25)',
+  },
+  shieldEmoji: { fontSize: 36 },
   bootTitle: {
-    fontSize: 36, fontWeight: '900', color: '#FFFFFF',
-    letterSpacing: 10,
+    fontSize: 40, fontWeight: '900', color: '#FFFFFF',
+    letterSpacing: 12,
+  },
+  bootTagline: {
+    marginTop: 8, color: UI_COLORS.TEXT_SECONDARY, fontSize: 13,
+    letterSpacing: 2.5, fontWeight: '500',
+  },
+  bootLoaderWrap: {
+    marginTop: 48, alignItems: 'center',
+  },
+  bootLoaderBar: {
+    width: 120, height: 3, borderRadius: 2,
+    backgroundColor: UI_COLORS.ACCENT,
+    marginBottom: 16,
   },
   bootSubtitle: {
-    marginTop: 16, color: UI_COLORS.TEXT_SECONDARY, fontSize: 14,
+    color: 'rgba(255,255,255,0.35)', fontSize: 12, letterSpacing: 0.5,
   },
-  bootError: { color: UI_COLORS.ERROR, fontSize: 16, textAlign: 'center', paddingHorizontal: 32 },
+  bootVersion: {
+    position: 'absolute', bottom: 40,
+    color: 'rgba(255,255,255,0.12)', fontSize: 11, letterSpacing: 0.5,
+  },
+  errorCard: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,71,87,0.08)',
+    borderRadius: 20, padding: 32,
+    borderWidth: 1, borderColor: 'rgba(255,71,87,0.2)',
+    marginHorizontal: 32,
+  },
+  errorIcon: { fontSize: 48, marginBottom: 16 },
+  bootError: { color: UI_COLORS.ERROR, fontSize: 16, textAlign: 'center' },
   bootHint: { color: UI_COLORS.TEXT_SECONDARY, fontSize: 13, marginTop: 8 },
 });
 

@@ -50,15 +50,46 @@ export const AWS_CONFIG = {
   IDENTITY_POOL_ID: 'YOUR_IDENTITY_POOL_ID',
 };
 
+// ─── Premium Dark Theme ──────────────────────────────────────────────────────
+// Carefully curated palette for a high-end security product feel
+
 export const UI_COLORS = {
-  PRIMARY: '#1A1A2E',
-  ACCENT: '#E94560',
-  SUCCESS: '#00C897',
-  WARNING: '#FFB347',
-  ERROR: '#FF4757',
-  BACKGROUND: '#0F0F1A',
-  SURFACE: '#1E1E30',
+  // Core palette
+  PRIMARY: '#0D0D1A',          // Deep space black
+  ACCENT: '#E94560',           // Vibrant crimson
+  ACCENT_LIGHT: 'rgba(233,69,96,0.15)',
+  SUCCESS: '#00D68F',          // Emerald green
+  SUCCESS_LIGHT: 'rgba(0,214,143,0.12)',
+  WARNING: '#FFB347',          // Warm amber
+  WARNING_LIGHT: 'rgba(255,179,71,0.12)',
+  ERROR: '#FF4757',            // Alert red
+  ERROR_LIGHT: 'rgba(255,71,87,0.12)',
+
+  // Surfaces
+  BACKGROUND: '#08081A',       // Near-black background
+  SURFACE: '#12122A',          // Card surface (subtle blue tint)
+  SURFACE_ELEVATED: '#1A1A35', // Elevated cards/modals
+
+  // Text
   TEXT_PRIMARY: '#FFFFFF',
-  TEXT_SECONDARY: '#8888AA',
-  OVERLAY: 'rgba(0,0,0,0.6)',
+  TEXT_SECONDARY: '#6B7199',   // Cool gray-blue
+  TEXT_TERTIARY: 'rgba(255,255,255,0.25)',
+
+  // Decorative
+  BORDER: 'rgba(255,255,255,0.06)',
+  BORDER_ACCENT: 'rgba(233,69,96,0.25)',
+  GLOW_ACCENT: 'rgba(233,69,96,0.08)',
+  GLOW_SUCCESS: 'rgba(0,214,143,0.08)',
+  OVERLAY: 'rgba(8,8,26,0.85)',
+
+  // Gradients (for LinearGradient or as reference)
+  GRAD_ACCENT_START: '#E94560',
+  GRAD_ACCENT_END: '#C73050',
+  GRAD_SURFACE_START: '#15152D',
+  GRAD_SURFACE_END: '#0D0D1A',
+
+  // Feature colors (for menu cards)
+  CYAN: '#4FC3F7',
+  PURPLE: '#B388FF',
+  TEAL: '#64FFDA',
 };
