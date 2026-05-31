@@ -255,10 +255,13 @@ export const HomeScreen: React.FC = () => {
         {menuItems.map((item, i) => (
           <Animated.View
             key={item.route}
-            style={{
-              opacity: cardAnims[i].opacity,
-              transform: [{ translateY: cardAnims[i].translateY }],
-            }}
+            style={[
+              styles.cardWrapper,
+              {
+                opacity: cardAnims[i].opacity,
+                transform: [{ translateY: cardAnims[i].translateY }],
+              }
+            ]}
           >
             <TouchableOpacity
               style={[styles.card, {
@@ -489,8 +492,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     alignContent: 'flex-start',
   },
-  card: {
+  cardWrapper: {
     width: (W - 62) / 2,
+  },
+  card: {
+    width: '100%',
     backgroundColor: UI_COLORS.SURFACE,
     borderRadius: 22,
     padding: 18,
