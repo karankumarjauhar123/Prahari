@@ -1,4 +1,4 @@
-name: Build Android APK 📱
+name: Build Android Release APK 📱
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
     branches:
       - main
       - master
-  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+  workflow_dispatch:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
@@ -34,19 +34,19 @@ jobs:
           node-version: '20.x'
           cache: 'npm'
 
-      - name: Clean npm Cache 🧹
-        run: |
-          npm cache clean --force
-          rm -rf node_modules package-lock.json
-
-      - name: Clean npm Cache 🧹
-        run: |
-          npm cache clean --force
-          rm -rf node_modules package-lock.json
-
       - name: Install Dependencies 📦
         run: |
           npm install --legacy-peer-deps
+
+      - name: Bundle JavaScript for Release 📜
+        run: |
+          mkdir -p android/app/src/main/assets
+          npx react-native bundle \
+            --platform android \
+            --dev false \
+            --entry-file index.js \
+            --bundle-output android/app/src/main/assets/index.android.bundle \
+            --assets-dest android/app/src/main/res/
 
       - name: Setup Gradle Cache 💾
         uses: gradle/actions/setup-gradle@v3
@@ -54,15 +54,20 @@ jobs:
       - name: Make Gradle Daemon Executable 🔓
         run: chmod +x android/gradlew
 
-      - name: Build Android Debug APK 🛠️
+      - name: Build Android Release APK 🛠️
         run: |
           cd android
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleRelease --no-daemon -x lint
 
-      - name: Upload Debug APK Artifact 📤
+      - name: Show APK size 📊
+        run: |
+          echo "=== Release APK Size ==="
+          ls -lh android/app/build/outputs/apk/release/app-release.apk
+
+      - name: Upload Release APK Artifact 📤
         uses: actions/upload-artifact@v4
         with:
-          name: prahari-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: prahari-release-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
