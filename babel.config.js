@@ -2,7 +2,6 @@
 module.exports = {
   presets: ['module:@react-native/babel-preset'],
   plugins: [
-    // Reanimated plugin MUST be last
     [
       'module-resolver',
       {
@@ -19,6 +18,7 @@ module.exports = {
         },
       },
     ],
-    'react-native-reanimated/plugin',
+    'react-native-worklets-core/plugin',
+    'react-native-reanimated/plugin', // Reanimated plugin MUST be last
   ],
 };
