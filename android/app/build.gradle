@@ -89,14 +89,6 @@ dependencies {
 
     // NOTE: TFLite is provided by react-native-fast-tflite — do NOT add native TFLite deps here
 
-    // SQLCipher for encrypted database
-    implementation 'net.zetetic:android-database-sqlcipher:4.5.4'
-    implementation 'androidx.sqlite:sqlite:2.3.1'
-
-    // Security — Android Keystore
-    implementation 'androidx.security:security-crypto:1.1.0-alpha06'
-    implementation 'androidx.biometric:biometric:1.2.0-alpha05'
-
     // Kotlin
     implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion"
 }
