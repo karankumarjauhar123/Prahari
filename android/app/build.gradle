@@ -5,6 +5,8 @@ apply plugin: "kotlin-android"
 
 react {
     /* Autolinking & Hermes */
+    hermesEnabled = true
+    entryFile = file("../../index.js")
 }
 
 android {
@@ -22,7 +24,8 @@ android {
 
         // Required for SQLCipher encryption
         ndk {
-            abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
+            // Hackathon: arm64-v8a only — all modern devices are 64-bit
+            abiFilters "arm64-v8a"
         }
     }
 
@@ -60,7 +63,8 @@ android {
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
-            signingConfig signingConfigs.release
+            // Hackathon: use debug keystore for signing
+            signingConfig signingConfigs.debug
         }
     }
 
