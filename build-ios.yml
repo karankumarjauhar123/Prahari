@@ -1,0 +1,62 @@
+name: Build iOS App 🍎
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Repository 📂
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x 🟢
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Install Dependencies 📦
+        run: |
+          npm install --legacy-peer-deps
+
+      - name: Install CocoaPods 💎
+        run: |
+          cd ios
+          pod install --repo-update
+        env:
+          NO_FLIPPER: 1
+
+      - name: Build iOS (Simulator - Release Mode) 🛠️
+        run: |
+          cd ios
+          xcodebuild \
+            -workspace PRAHARI.xcworkspace \
+            -scheme PRAHARI \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build | tail -50
+
+      - name: Upload iOS Build 📤
+        uses: actions/upload-artifact@v4
+        with:
+          name: prahari-ios-build
+          path: ios/build/Build/Products/Release-iphonesimulator/PRAHARI.app
+          if-no-files-found: error
+          retention-days: 30
