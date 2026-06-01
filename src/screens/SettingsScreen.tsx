@@ -41,33 +41,19 @@ export const SettingsScreen: React.FC = () => {
   const [isPurging, setIsPurging] = useState(false);
   const [dbStats, setDbStats] = useState({ totalEmbeddings: 0, totalRecords: 0, unsyncedCount: 0 });
   const [showBenchmark, setShowBenchmark] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
   // ─── Animations ──────────────────────────────────────────
-  const headerOpacity = useRef(new Animated.Value(0)).current;
-  const headerSlide = useRef(new Animated.Value(-20)).current;
   const vaultGlow = useRef(new Animated.Value(0)).current;
-  const sectionAnims = useRef([0, 1, 2, 3, 4, 5, 6].map(() => new Animated.Value(0))).current;
-  const sectionSlides = useRef([0, 1, 2, 3, 4, 5, 6].map(() => new Animated.Value(30))).current;
   const benchmarkPulse = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
-    loadSettings();
-    loadStats();
-
-    // Header entrance
-    Animated.parallel([
-      Animated.timing(headerOpacity, { toValue: 1, duration: 500, useNativeDriver: true }),
-      Animated.timing(headerSlide, { toValue: 0, duration: 500, easing: Easing.out(Easing.back(1.5)), useNativeDriver: true }),
-    ]).start();
-
-    // Staggered section entrances
-    const sectionAnimations = sectionAnims.map((anim, i) =>
-      Animated.parallel([
-        Animated.timing(anim, { toValue: 1, duration: 450, delay: 150 + i * 80, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-        Animated.timing(sectionSlides[i], { toValue: 0, duration: 450, delay: 150 + i * 80, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-      ])
-    );
-    Animated.stagger(0, sectionAnimations).start();
+    const initScreen = async () => {
+      await loadSettings();
+      await loadStats();
+      setLoaded(true);
+    };
+    initScreen();
 
     // Vault glow loop
     Animated.loop(
@@ -99,8 +85,13 @@ export const SettingsScreen: React.FC = () => {
   };
 
   const loadStats = async () => {
-    const s = await DatabaseService.getStats();
-    setDbStats(s);
+    try {
+      const s = await DatabaseService.getStats();
+      setDbStats(s);
+    } catch (err) {
+      console.error('[SettingsScreen] Failed to load stats:', err);
+      // Keep default values — don't crash the screen
+    }
   };
 
   const handleManualSync = async () => {
@@ -176,16 +167,13 @@ export const SettingsScreen: React.FC = () => {
   );
 
   const Section = ({ title, children, index, danger }: { title: string; children: React.ReactNode; index: number; danger?: boolean }) => (
-    <Animated.View style={[
-      styles.section,
-      { opacity: sectionAnims[index] || 1, transform: [{ translateY: sectionSlides[index] || 0 }] },
-    ]}>
+    <View style={styles.section}>
       <View style={styles.sectionHeader}>
         <View style={[styles.sectionDot, danger && { backgroundColor: UI_COLORS.ERROR }]} />
         <Text style={styles.sectionTitle}>{title}</Text>
       </View>
       <View style={[styles.sectionCard, danger && styles.dangerCard]}>{children}</View>
-    </Animated.View>
+    </View>
   );
 
   const ThresholdButton = ({ value, current, onPress, isChallenge }: { value: number; current: number; onPress: () => void; isChallenge?: boolean }) => {
@@ -241,7 +229,7 @@ export const SettingsScreen: React.FC = () => {
       showsVerticalScrollIndicator={false}
     >
       {/* ─── Header ─── */}
-      <Animated.View style={[styles.header, { opacity: headerOpacity, transform: [{ translateY: headerSlide }] }]}>
+      <View style={styles.header}>
         <TouchableOpacity
           style={styles.backButton}
           onPress={() => nav.goBack()}
@@ -251,7 +239,7 @@ export const SettingsScreen: React.FC = () => {
         </TouchableOpacity>
         <Text style={styles.title}>Settings</Text>
         <View style={{ width: 44 }} />
-      </Animated.View>
+      </View>
 
       {/* ─── Performance ─── */}
       <Section title="PERFORMANCE" index={0}>
@@ -273,10 +261,7 @@ export const SettingsScreen: React.FC = () => {
       </Section>
 
       {/* ─── Device Vault ─── */}
-      <Animated.View style={[
-        styles.section,
-        { opacity: sectionAnims[1], transform: [{ translateY: sectionSlides[1] }] },
-      ]}>
+      <View style={styles.section}>
         <View style={styles.sectionHeader}>
           <View style={styles.sectionDot} />
           <Text style={styles.sectionTitle}>DEVICE VAULT</Text>
@@ -299,7 +284,7 @@ export const SettingsScreen: React.FC = () => {
             />
           </View>
         </Animated.View>
-      </Animated.View>
+      </View>
 
       {/* ─── Recognition Accuracy ─── */}
       <Section title="RECOGNITION ACCURACY" index={2}>
@@ -417,10 +402,7 @@ export const SettingsScreen: React.FC = () => {
       </Section>
 
       {/* ─── Build Info Footer ─── */}
-      <Animated.View style={[
-        styles.buildInfo,
-        { opacity: sectionAnims[6], transform: [{ translateY: sectionSlides[6] }] },
-      ]}>
+      <View style={styles.buildInfo}>
         <View style={styles.buildDivider} />
         <View style={styles.buildLogoRow}>
           <Text style={styles.buildLogo}>◆</Text>
@@ -429,7 +411,7 @@ export const SettingsScreen: React.FC = () => {
         <Text style={styles.buildVersion}>v1.0.0 — Model size: ~8.5 MB</Text>
         <Text style={styles.buildModels}>AdaFace + MobileOne-S0 + MediaPipe FaceMesh</Text>
         <Text style={styles.buildCopyright}>On-device biometric security</Text>
-      </Animated.View>
+      </View>
 
       {/* ─── Benchmark Overlay ─── */}
       <BenchmarkOverlay visible={showBenchmark} onClose={() => setShowBenchmark(false)} />

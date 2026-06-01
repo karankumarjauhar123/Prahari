@@ -4,7 +4,7 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import {
   View, Text, StyleSheet, Dimensions, TouchableOpacity,
-  Animated, StatusBar,
+  Animated, StatusBar, ActivityIndicator,
 } from 'react-native';
 import {
   Camera, useCameraDevice, useCameraPermission,
@@ -12,6 +12,7 @@ import {
 } from 'react-native-vision-camera';
 import { Worklets } from 'react-native-worklets-core';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
 import Svg, { Circle } from 'react-native-svg';
 import { FaceOverlay } from '../components/FaceOverlay';
 import { LivenessChallenge, StatusBadge } from '../components/LivenessChallenge';
@@ -19,6 +20,7 @@ import { PerformanceMonitor } from '../components/PerformanceMonitor';
 import { useFaceRecognition } from '../hooks/useFaceRecognition';
 import { UI_COLORS } from '../constants';
 import type { FaceDetection, LivenessChallenge as ChallengeType } from '../types';
+
 
 const { width: SCREEN_W } = Dimensions.get('window');
 const OVAL_W = SCREEN_W * 0.72;
@@ -37,7 +39,7 @@ type AuthState =
 
 export const AuthScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
-  const device = useCameraDevice('front');
+  const nav = useNavigation();
   const { hasPermission, requestPermission } = useCameraPermission();
 
   const [authState, setAuthState] = useState<AuthState>('INITIALIZING');
@@ -48,6 +50,8 @@ export const AuthScreen: React.FC = () => {
   const [statusMessage, setStatusMessage] = useState('Initializing...');
   const [qualityScore, setQualityScore] = useState(0);
   const [showPerf, setShowPerf] = useState(false);
+  const [isCameraLoaded, setIsCameraLoaded] = useState(false);
+
 
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const successAnim = useRef(new Animated.Value(0)).current;
@@ -202,45 +206,127 @@ export const AuthScreen: React.FC = () => {
     );
   }
 
-  if (!device) {
-    return (
-      <View style={styles.centerContainer}>
-        <Text style={styles.permissionIcon}>📷</Text>
-        <Text style={styles.permissionText}>No front camera found</Text>
-      </View>
-    );
-  }
-
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
       {/* Camera Feed */}
-      <Camera
-        style={StyleSheet.absoluteFill}
-        device={device}
-        isActive={true}
+      <CameraFeed
+        isActive={authState === 'WAITING_FACE' || authState === 'QUALITY_CHECK' || authState === 'LIVENESS_PASSIVE' || authState === 'LIVENESS_ACTIVE' || authState === 'RECOGNIZING'}
         frameProcessor={frameProcessor}
-        photo={false}
-        video={false}
-        audio={false}
-        fps={8}
-        pixelFormat="rgb"
+        onCameraLoaded={setIsCameraLoaded}
       />
 
-      {/* Dark overlay with oval cutout */}
-      <FaceOverlay
-        ovalWidth={OVAL_W}
-        ovalHeight={OVAL_H}
-        strokeColor={getOvalColor()}
-        isAnimating={authState === 'WAITING_FACE'}
-        pulseAnim={pulseAnim}
-        quality={qualityScore}
-      />
+      {/* Render overlays and controls only when camera is loaded */}
+      {isCameraLoaded && (
+        <>
+          {/* Dark overlay with oval cutout */}
+          <FaceOverlay
+            ovalWidth={OVAL_W}
+            ovalHeight={OVAL_H}
+            strokeColor={getOvalColor()}
+            isAnimating={authState === 'WAITING_FACE'}
+            pulseAnim={pulseAnim}
+            quality={qualityScore}
+          />
 
-      {/* Top bar */}
+          {/* Live Performance Monitor */}
+          <PerformanceMonitor visible={showPerf} />
+
+          {/* Liveness challenge indicator */}
+          {authState === 'LIVENESS_ACTIVE' && currentChallenge && (
+            <LivenessChallenge challenge={currentChallenge} />
+          )}
+
+          {/* Auth pipeline stage indicator */}
+          <View style={styles.stageIndicator}>
+            {['👤', '📐', '🔍', '🎯', '🧠'].map((icon, i) => {
+              const stages: AuthState[] = ['WAITING_FACE', 'QUALITY_CHECK', 'LIVENESS_PASSIVE', 'LIVENESS_ACTIVE', 'RECOGNIZING'];
+              const currentIdx = stages.indexOf(authState);
+              const isActive = i === currentIdx;
+              const isDone = i < currentIdx;
+              return (
+                <View key={i} style={styles.stageRow}>
+                  <View style={[
+                    styles.stageDot,
+                    isDone && styles.stageDotDone,
+                    isActive && styles.stageDotActive,
+                  ]}>
+                    <Text style={styles.stageIcon}>
+                      {isDone ? '✓' : icon}
+                    </Text>
+                  </View>
+                  {i < 4 && (
+                    <View style={[
+                      styles.stageLine,
+                      isDone && styles.stageLineDone,
+                    ]} />
+                  )}
+                </View>
+              );
+            })}
+          </View>
+
+          {/* Status message */}
+          <View style={styles.statusContainer}>
+            <Animated.View style={[styles.statusPill, { opacity: statusFade }]}>
+              <Text style={styles.statusIcon}>{getStatusIcon()}</Text>
+              <Text style={[
+                styles.statusText,
+                authState === 'SUCCESS' && styles.successText,
+                authState === 'FAILED' && styles.failedText,
+                authState === 'SPOOF_DETECTED' && styles.spoofText,
+              ]}>
+                {getStatusMessage()}
+              </Text>
+            </Animated.View>
+
+            {authState === 'SUCCESS' && (
+              <Animated.View style={[styles.successCard, { transform: [{ scale: successAnim }] }]}>
+                <View style={styles.successBadge}>
+                  <Text style={styles.successBadgeText}>VERIFIED</Text>
+                </View>
+                <Text style={styles.successName}>{resultName}</Text>
+                <View style={styles.successConfRow}>
+                  <View style={styles.successConfBar}>
+                    <View style={[styles.successConfFill, { width: `${Math.round(resultConfidence * 100)}%` }]} />
+                  </View>
+                  <Text style={styles.successConf}>
+                    {Math.round(resultConfidence * 100)}%
+                  </Text>
+                </View>
+                <Text style={styles.successTimestamp}>
+                  {new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                </Text>
+              </Animated.View>
+            )}
+
+            {(authState === 'FAILED' || authState === 'SPOOF_DETECTED') && (
+              <TouchableOpacity
+                style={[styles.retryButton, authState === 'SPOOF_DETECTED' && styles.spoofRetryButton]}
+                onPress={() => setAuthState('WAITING_FACE')}
+              >
+                <Text style={styles.retryText}>↻ Try Again</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {/* Bottom controls */}
+          <View style={[styles.bottomBar, { paddingBottom: insets.bottom + 16 }]}>
+            <View style={styles.bottomInfo}>
+              <View style={styles.bottomInfoDot} />
+              <Text style={styles.bottomInfoText}>100% Offline • AES-256 Encrypted</Text>
+            </View>
+          </View>
+        </>
+      )}
+
+      {/* Top bar (Always render for back navigation) */}
       <View style={[styles.topBar, { paddingTop: insets.top + 12 }]}>
         <View style={styles.topLeft}>
+          <TouchableOpacity onPress={() => nav.goBack()} style={styles.backBtn} activeOpacity={0.7}>
+            <Text style={styles.backBtnText}>‹</Text>
+          </TouchableOpacity>
           <Text style={styles.appTitle}>PRAHARI</Text>
           <View style={styles.aiPill}>
             <Text style={styles.aiPillText}>EDGE AI</Text>
@@ -254,95 +340,6 @@ export const AuthScreen: React.FC = () => {
             <Text style={styles.perfToggleText}>⚡</Text>
           </TouchableOpacity>
           <StatusBadge isOnline={false} pendingCount={0} />
-        </View>
-      </View>
-
-      {/* Live Performance Monitor */}
-      <PerformanceMonitor visible={showPerf} />
-
-      {/* Liveness challenge indicator */}
-      {authState === 'LIVENESS_ACTIVE' && currentChallenge && (
-        <LivenessChallenge challenge={currentChallenge} />
-      )}
-
-      {/* Auth pipeline stage indicator */}
-      <View style={styles.stageIndicator}>
-        {['👤', '📐', '🔍', '🎯', '🧠'].map((icon, i) => {
-          const stages: AuthState[] = ['WAITING_FACE', 'QUALITY_CHECK', 'LIVENESS_PASSIVE', 'LIVENESS_ACTIVE', 'RECOGNIZING'];
-          const currentIdx = stages.indexOf(authState);
-          const isActive = i === currentIdx;
-          const isDone = i < currentIdx;
-          return (
-            <View key={i} style={styles.stageRow}>
-              <View style={[
-                styles.stageDot,
-                isDone && styles.stageDotDone,
-                isActive && styles.stageDotActive,
-              ]}>
-                <Text style={styles.stageIcon}>
-                  {isDone ? '✓' : icon}
-                </Text>
-              </View>
-              {i < 4 && (
-                <View style={[
-                  styles.stageLine,
-                  isDone && styles.stageLineDone,
-                ]} />
-              )}
-            </View>
-          );
-        })}
-      </View>
-
-      {/* Status message */}
-      <View style={styles.statusContainer}>
-        <Animated.View style={[styles.statusPill, { opacity: statusFade }]}>
-          <Text style={styles.statusIcon}>{getStatusIcon()}</Text>
-          <Text style={[
-            styles.statusText,
-            authState === 'SUCCESS' && styles.successText,
-            authState === 'FAILED' && styles.failedText,
-            authState === 'SPOOF_DETECTED' && styles.spoofText,
-          ]}>
-            {getStatusMessage()}
-          </Text>
-        </Animated.View>
-
-        {authState === 'SUCCESS' && (
-          <Animated.View style={[styles.successCard, { transform: [{ scale: successAnim }] }]}>
-            <View style={styles.successBadge}>
-              <Text style={styles.successBadgeText}>VERIFIED</Text>
-            </View>
-            <Text style={styles.successName}>{resultName}</Text>
-            <View style={styles.successConfRow}>
-              <View style={styles.successConfBar}>
-                <View style={[styles.successConfFill, { width: `${Math.round(resultConfidence * 100)}%` }]} />
-              </View>
-              <Text style={styles.successConf}>
-                {Math.round(resultConfidence * 100)}%
-              </Text>
-            </View>
-            <Text style={styles.successTimestamp}>
-              {new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
-            </Text>
-          </Animated.View>
-        )}
-
-        {(authState === 'FAILED' || authState === 'SPOOF_DETECTED') && (
-          <TouchableOpacity
-            style={[styles.retryButton, authState === 'SPOOF_DETECTED' && styles.spoofRetryButton]}
-            onPress={() => setAuthState('WAITING_FACE')}
-          >
-            <Text style={styles.retryText}>↻ Try Again</Text>
-          </TouchableOpacity>
-        )}
-      </View>
-
-      {/* Bottom controls */}
-      <View style={[styles.bottomBar, { paddingBottom: insets.bottom + 16 }]}>
-        <View style={styles.bottomInfo}>
-          <View style={styles.bottomInfoDot} />
-          <Text style={styles.bottomInfoText}>100% Offline • AES-256 Encrypted</Text>
         </View>
       </View>
     </View>
@@ -521,4 +518,75 @@ const styles = StyleSheet.create({
     paddingHorizontal: 32, paddingVertical: 14, borderRadius: 16,
   },
   permissionButtonText: { color: '#FFFFFF', fontWeight: '700', fontSize: 15 },
+  backBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    marginRight: 4,
+  },
+  backBtnText: {
+    color: '#FFF',
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginTop: -2,
+  },
 });
+
+const CameraFeed: React.FC<{
+  isActive: boolean;
+  frameProcessor: any;
+  onCameraLoaded: (loaded: boolean) => void;
+}> = ({ isActive, frameProcessor, onCameraLoaded }) => {
+  const device = useCameraDevice('front');
+  const [timedOut, setTimedOut] = useState(false);
+
+  useEffect(() => {
+    if (!device) {
+      onCameraLoaded(false);
+      const timer = setTimeout(() => setTimedOut(true), 5000);
+      return () => clearTimeout(timer);
+    } else {
+      setTimedOut(false);
+      onCameraLoaded(true);
+    }
+  }, [device, onCameraLoaded]);
+
+  if (!device) {
+    return (
+      <View style={styles.centerContainer}>
+        {timedOut ? (
+          <>
+            <Text style={{ fontSize: 48, marginBottom: 16 }}>📷</Text>
+            <Text style={{ color: UI_COLORS.TEXT_PRIMARY, fontSize: 16, fontWeight: '700' }}>No front camera found</Text>
+            <Text style={{ color: UI_COLORS.TEXT_SECONDARY, fontSize: 13, marginTop: 6, textAlign: 'center' }}>Please check your camera settings and try again.</Text>
+          </>
+        ) : (
+          <>
+            <ActivityIndicator color={UI_COLORS.ACCENT} size="large" />
+            <Text style={{ color: UI_COLORS.TEXT_SECONDARY, marginTop: 12 }}>Initializing camera...</Text>
+          </>
+        )}
+      </View>
+    );
+  }
+
+  return (
+    <Camera
+      style={StyleSheet.absoluteFill}
+      device={device}
+      isActive={isActive}
+      frameProcessor={frameProcessor}
+      photo={false}
+      video={false}
+      audio={false}
+      fps={8}
+      pixelFormat="rgb"
+    />
+  );
+};
+

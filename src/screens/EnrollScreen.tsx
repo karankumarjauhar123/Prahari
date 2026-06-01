@@ -266,7 +266,6 @@ export const EnrollScreen: React.FC = () => {
     nav.goBack();
   }, [nav]);
 
-  const device = useCameraDevice('front');
   const { hasPermission, requestPermission } = useCameraPermission();
   const [name, setName] = useState('');
   const [employeeId, setEmployeeId] = useState('');
@@ -275,17 +274,26 @@ export const EnrollScreen: React.FC = () => {
   const [state, setState] = useState<EnrollState>({
     step: 'FORM', capturedCount: 0, embeddings: [],
   });
+  const [isCameraLoaded, setIsCameraLoaded] = useState(false);
   const isCapturingRef = useRef(false);
   const capturedEmbeddingsRef = useRef<number[][]>([]);
   const stepRef = useRef<EnrollState['step']>('FORM');
 
-  // Initialize FaceEngine models on screen mount
+  // Initialize FaceEngine models and request camera permission on screen mount
   useEffect(() => {
     const init = async () => {
       try {
         await FaceEngine.initialize();
       } catch (err) {
         console.error('[EnrollScreen] FaceEngine initialize error:', err);
+      }
+      // Pre-request camera permission so device is available when capture starts
+      if (!hasPermission) {
+        try {
+          await requestPermission();
+        } catch (err) {
+          console.error('[EnrollScreen] Camera permission request error:', err);
+        }
       }
     };
     init();
@@ -604,109 +612,110 @@ export const EnrollScreen: React.FC = () => {
       outputRange: [-120, 120],
     });
 
+    const onCancel = () => {
+      capturedEmbeddingsRef.current = [];
+      setState({ step: 'FORM', capturedCount: 0, embeddings: [] });
+      stepRef.current = 'FORM';
+    };
+
     return (
       <View style={styles.container}>
         <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
-        {device && (
-          <Camera
-            style={StyleSheet.absoluteFill}
-            device={device} isActive={state.step === 'CAPTURE'}
-            frameProcessor={frameProcessor}
-            fps={5}
-            pixelFormat="rgb"
-          />
-        )}
+        <EnrollCameraFeed
+          isActive={state.step === 'CAPTURE'}
+          frameProcessor={frameProcessor}
+          onCancel={onCancel}
+          onCameraLoaded={setIsCameraLoaded}
+        />
 
-        {/* Dark overlay */}
-        <View style={[styles.captureOverlay, { paddingTop: insets.top + 16 }]}>
-          {/* Top info bar */}
-          <View style={styles.captureTopBar}>
-            <TouchableOpacity
-              onPress={() => {
-                capturedEmbeddingsRef.current = [];
-                setState({ step: 'FORM', capturedCount: 0, embeddings: [] });
-                stepRef.current = 'FORM';
-              }}
-              style={styles.captureBackBtn}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.captureBackText}>✕</Text>
-            </TouchableOpacity>
-            <View style={styles.captureBadge}>
-              <Text style={styles.captureBadgeText}>ENROLLING</Text>
-            </View>
-          </View>
-
-          {/* Title */}
-          <Text style={styles.captureTitle}>
-            {state.step === 'PROCESSING' ? 'Processing...' : 'Look at the Camera'}
-          </Text>
-          <Text style={styles.captureSubtitleInfo}>
-            {state.step === 'PROCESSING'
-              ? 'Encrypting and storing biometric data'
-              : 'Keep your face centered and well-lit'}
-          </Text>
-
-          {/* Center face guide with progress ring */}
-          <View style={styles.faceGuideContainer}>
-            <Animated.View
-              style={[
-                styles.faceGuideOuter,
-                { transform: [{ scale: pulseAnim }] },
-              ]}
-            >
-              <ProgressRing progress={progress} size={200} strokeWidth={5} />
-
-              {/* Scan line overlay */}
-              {state.step === 'CAPTURE' && (
-                <Animated.View
-                  style={[
-                    styles.scanLine,
-                    { transform: [{ translateY: scanLineTranslate }] },
-                  ]}
-                />
-              )}
-            </Animated.View>
-
-            {/* Sample counter */}
-            <View style={styles.sampleCountContainer}>
-              <Text style={styles.sampleCountLabel}>SAMPLE</Text>
-              <Text style={styles.sampleCountValue}>
-                {Math.min(state.capturedCount + (state.step === 'PROCESSING' ? 0 : 1), CAPTURE_COUNT)}
-                <Text style={styles.sampleCountTotal}>/{CAPTURE_COUNT}</Text>
-              </Text>
-            </View>
-          </View>
-
-          {/* Progress dots row */}
-          <View style={styles.progressRow}>
-            {Array.from({ length: CAPTURE_COUNT }).map((_, i) => (
-              <View key={i} style={styles.progressDotContainer}>
-                <View
-                  style={[
-                    styles.progressDot,
-                    i < state.capturedCount && styles.progressDotDone,
-                    i === state.capturedCount && state.step === 'CAPTURE' && styles.progressDotActive,
-                  ]}
-                />
-                {i < state.capturedCount && (
-                  <Text style={styles.progressDotCheck}>✓</Text>
-                )}
+        {/* Dark overlay - only display when camera is loaded */}
+        {isCameraLoaded && (
+          <View style={[styles.captureOverlay, { paddingTop: insets.top + 16 }]}>
+            {/* Top info bar */}
+            <View style={styles.captureTopBar}>
+              <TouchableOpacity
+                onPress={onCancel}
+                style={styles.captureBackBtn}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.captureBackText}>✕</Text>
+              </TouchableOpacity>
+              <View style={styles.captureBadge}>
+                <Text style={styles.captureBadgeText}>ENROLLING</Text>
               </View>
-            ))}
+            </View>
+
+            {/* Title */}
+            <Text style={styles.captureTitle}>
+              {state.step === 'PROCESSING' ? 'Processing...' : 'Look at the Camera'}
+            </Text>
+            <Text style={styles.captureSubtitleInfo}>
+              {state.step === 'PROCESSING'
+                ? 'Encrypting and storing biometric data'
+                : 'Keep your face centered and well-lit'}
+            </Text>
+
+            {/* Center face guide with progress ring */}
+            <View style={styles.faceGuideContainer}>
+              <Animated.View
+                style={[
+                  styles.faceGuideOuter,
+                  { transform: [{ scale: pulseAnim }] },
+                ]}
+              >
+                <ProgressRing progress={progress} size={200} strokeWidth={5} />
+
+                {/* Scan line overlay */}
+                {state.step === 'CAPTURE' && (
+                  <Animated.View
+                    style={[
+                      styles.scanLine,
+                      { transform: [{ translateY: scanLineTranslate }] },
+                    ]}
+                  />
+                )}
+              </Animated.View>
+
+              {/* Sample counter */}
+              <View style={styles.sampleCountContainer}>
+                <Text style={styles.sampleCountLabel}>SAMPLE</Text>
+                <Text style={styles.sampleCountValue}>
+                  {Math.min(state.capturedCount + (state.step === 'PROCESSING' ? 0 : 1), CAPTURE_COUNT)}
+                  <Text style={styles.sampleCountTotal}>/{CAPTURE_COUNT}</Text>
+                </Text>
+              </View>
+            </View>
+
+            {/* Progress dots row */}
+            <View style={styles.progressRow}>
+              {Array.from({ length: CAPTURE_COUNT }).map((_, i) => (
+                <View key={i} style={styles.progressDotContainer}>
+                  <View
+                    style={[
+                      styles.progressDot,
+                      i < state.capturedCount && styles.progressDotDone,
+                      i === state.capturedCount && state.step === 'CAPTURE' && styles.progressDotActive,
+                    ]}
+                  />
+                  {i < state.capturedCount && (
+                    <Text style={styles.progressDotCheck}>✓</Text>
+                  )}
+                </View>
+              ))}
+            </View>
+
+            <Text style={styles.captureSubtext}>
+              {state.step === 'PROCESSING'
+                ? 'Saving encrypted embedding...'
+                : `Captured ${state.capturedCount} of ${CAPTURE_COUNT} samples`}
+            </Text>
+
+            {state.step === 'PROCESSING' && (
+              <ActivityIndicator color={UI_COLORS.SUCCESS} size="large" style={{ marginTop: 20 }} />
+            )}
           </View>
-
-          <Text style={styles.captureSubtext}>
-            {state.step === 'PROCESSING'
-              ? 'Saving encrypted embedding...'
-              : `Captured ${state.capturedCount} of ${CAPTURE_COUNT} samples`}
-          </Text>
-
-          {state.step === 'PROCESSING' && (
-            <ActivityIndicator color={UI_COLORS.SUCCESS} size="large" style={{ marginTop: 20 }} />
-          )}
-        </View>
+        )}
       </View>
     );
   }
@@ -1275,3 +1284,68 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 });
+
+const EnrollCameraFeed: React.FC<{
+  isActive: boolean;
+  frameProcessor: any;
+  onCancel: () => void;
+  onCameraLoaded: (loaded: boolean) => void;
+}> = ({ isActive, frameProcessor, onCancel, onCameraLoaded }) => {
+  const device = useCameraDevice('front');
+  const [timedOut, setTimedOut] = useState(false);
+
+  useEffect(() => {
+    if (!device) {
+      onCameraLoaded(false);
+      const timer = setTimeout(() => setTimedOut(true), 5000);
+      return () => clearTimeout(timer);
+    } else {
+      setTimedOut(false);
+      onCameraLoaded(true);
+    }
+  }, [device, onCameraLoaded]);
+
+  if (!device) {
+    return (
+      <View style={[StyleSheet.absoluteFill, { backgroundColor: UI_COLORS.BACKGROUND, alignItems: 'center', justifyContent: 'center' }]}>
+        {timedOut ? (
+          <>
+            <Text style={{ fontSize: 48, marginBottom: 16 }}>📷</Text>
+            <Text style={{ color: UI_COLORS.TEXT_PRIMARY, fontSize: 16, fontWeight: '700' }}>No front camera found</Text>
+            <Text style={{ color: UI_COLORS.TEXT_SECONDARY, fontSize: 13, marginTop: 6, marginBottom: 20, textAlign: 'center', paddingHorizontal: 32 }}>Please check your camera settings and try again.</Text>
+          </>
+        ) : (
+          <>
+            <ActivityIndicator color={UI_COLORS.ACCENT} size="large" />
+            <Text style={{ color: UI_COLORS.TEXT_SECONDARY, marginTop: 12, marginBottom: 20 }}>Initializing camera...</Text>
+          </>
+        )}
+        <TouchableOpacity
+          onPress={onCancel}
+          style={{
+            paddingHorizontal: 20,
+            paddingVertical: 10,
+            borderRadius: 8,
+            backgroundColor: 'rgba(255,255,255,0.1)',
+            borderWidth: 1,
+            borderColor: 'rgba(255,255,255,0.15)',
+          }}
+        >
+          <Text style={{ color: '#FFF', fontWeight: '600' }}>Cancel</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  return (
+    <Camera
+      style={StyleSheet.absoluteFill}
+      device={device}
+      isActive={isActive}
+      frameProcessor={frameProcessor}
+      fps={5}
+      pixelFormat="rgb"
+    />
+  );
+};
+

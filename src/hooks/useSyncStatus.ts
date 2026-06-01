@@ -24,8 +24,12 @@ export const useSyncStatus = () => {
   });
 
   const reloadStats = useCallback(async () => {
-    const s = await DatabaseService.getStats();
-    setStats(s);
+    try {
+      const s = await DatabaseService.getStats();
+      setStats(s);
+    } catch (err) {
+      console.error('[useSyncStatus] Failed to load stats:', err);
+    }
   }, []);
 
   useEffect(() => {

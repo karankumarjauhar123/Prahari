@@ -4,7 +4,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity,
-  Animated, Easing,
+  Animated, Easing, ScrollView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -179,123 +179,129 @@ export const HomeScreen: React.FC = () => {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      {/* Header */}
-      <Animated.View
-        style={[styles.header, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
       >
-        <View style={styles.headerLeft}>
-          <View style={styles.titleRow}>
-            <Animated.View style={[styles.accentBarLeft, { opacity: accentPulse }]} />
-            <Text style={styles.shieldIcon}>🛡️</Text>
-            <Text style={styles.appName}>PRAHARI</Text>
-            <Animated.View style={[styles.accentBarRight, { opacity: accentPulse }]} />
+        {/* Header */}
+        <Animated.View
+          style={[styles.header, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}
+        >
+          <View style={styles.headerLeft}>
+            <View style={styles.titleRow}>
+              <Animated.View style={[styles.accentBarLeft, { opacity: accentPulse }]} />
+              <Text style={styles.shieldIcon}>🛡️</Text>
+              <Text style={styles.appName}>PRAHARI</Text>
+              <Animated.View style={[styles.accentBarRight, { opacity: accentPulse }]} />
+            </View>
+            <Text style={styles.tagline}>Offline Face Authentication</Text>
           </View>
-          <Text style={styles.tagline}>Offline Face Authentication</Text>
-        </View>
-        <View style={[styles.onlinePill, {
-          backgroundColor: syncStatus.isOnline
-            ? 'rgba(0,214,143,0.12)' : 'rgba(255,71,87,0.10)',
-          borderColor: syncStatus.isOnline ? UI_COLORS.SUCCESS : UI_COLORS.ERROR,
-        }]}>
-          <View style={[styles.onlineDot, {
-            backgroundColor: syncStatus.isOnline ? UI_COLORS.SUCCESS : UI_COLORS.ERROR,
-          }]} />
-          <Text style={[styles.onlineText, {
-            color: syncStatus.isOnline ? UI_COLORS.SUCCESS : UI_COLORS.ERROR,
+          <View style={[styles.onlinePill, {
+            backgroundColor: syncStatus.isOnline
+              ? 'rgba(0,214,143,0.12)' : 'rgba(255,71,87,0.10)',
+            borderColor: syncStatus.isOnline ? UI_COLORS.SUCCESS : UI_COLORS.ERROR,
           }]}>
-            {syncStatus.isOnline ? 'ONLINE' : 'OFFLINE'}
-          </Text>
-        </View>
-      </Animated.View>
-
-      {/* Stats Row */}
-      <Animated.View style={[styles.statsRow, { opacity: fadeAnim }]}>
-        <StatCard
-          label="Enrolled"
-          value={stats.totalEmbeddings}
-          icon="👤"
-          glowColor={UI_COLORS.GLOW_ACCENT}
-          shimmerOpacity={shimmerOpacity}
-        />
-        <StatCard
-          label="Total Logs"
-          value={stats.totalRecords}
-          icon="📊"
-          glowColor={UI_COLORS.GLOW_SUCCESS}
-          shimmerOpacity={shimmerOpacity}
-        />
-        <StatCard
-          label="Unsynced"
-          value={stats.unsyncedCount}
-          icon="⏳"
-          highlight={stats.unsyncedCount > 0}
-          glowColor="rgba(255,179,71,0.08)"
-          shimmerOpacity={shimmerOpacity}
-        />
-      </Animated.View>
-
-      {/* Sync banner */}
-      {!syncStatus.isOnline && stats.unsyncedCount > 0 && (
-        <View style={styles.syncBanner}>
-          <View style={styles.syncBannerIconWrap}>
-            <Text style={styles.syncBannerIcon}>📡</Text>
-          </View>
-          <View style={styles.syncBannerContent}>
-            <Text style={styles.syncBannerTitle}>Sync Pending</Text>
-            <Text style={styles.syncBannerText}>
-              {stats.unsyncedCount} record{stats.unsyncedCount > 1 ? 's' : ''} queued — will sync when online
+            <View style={[styles.onlineDot, {
+              backgroundColor: syncStatus.isOnline ? UI_COLORS.SUCCESS : UI_COLORS.ERROR,
+            }]} />
+            <Text style={[styles.onlineText, {
+              color: syncStatus.isOnline ? UI_COLORS.SUCCESS : UI_COLORS.ERROR,
+            }]}>
+              {syncStatus.isOnline ? 'ONLINE' : 'OFFLINE'}
             </Text>
           </View>
-        </View>
-      )}
+        </Animated.View>
 
-      {/* Menu Grid */}
-      <View style={styles.grid}>
-        {menuItems.map((item, i) => (
-          <Animated.View
-            key={item.route}
-            style={[
-              styles.cardWrapper,
-              {
-                opacity: cardAnims[i].opacity,
-                transform: [{ translateY: cardAnims[i].translateY }],
-              }
-            ]}
-          >
-            <TouchableOpacity
-              style={[styles.card, {
-                borderColor: item.color + '25',
-                shadowColor: item.color,
-              }]}
-              onPress={() => nav.navigate(item.route)}
-              activeOpacity={0.7}
+        {/* Stats Row */}
+        <Animated.View style={[styles.statsRow, { opacity: fadeAnim }]}>
+          <StatCard
+            label="Enrolled"
+            value={stats.totalEmbeddings}
+            icon="👤"
+            glowColor={UI_COLORS.GLOW_ACCENT}
+            shimmerOpacity={shimmerOpacity}
+          />
+          <StatCard
+            label="Total Logs"
+            value={stats.totalRecords}
+            icon="📊"
+            glowColor={UI_COLORS.GLOW_SUCCESS}
+            shimmerOpacity={shimmerOpacity}
+          />
+          <StatCard
+            label="Unsynced"
+            value={stats.unsyncedCount}
+            icon="⏳"
+            highlight={stats.unsyncedCount > 0}
+            glowColor="rgba(255,179,71,0.08)"
+            shimmerOpacity={shimmerOpacity}
+          />
+        </Animated.View>
+
+        {/* Sync banner */}
+        {!syncStatus.isOnline && stats.unsyncedCount > 0 && (
+          <View style={styles.syncBanner}>
+            <View style={styles.syncBannerIconWrap}>
+              <Text style={styles.syncBannerIcon}>📡</Text>
+            </View>
+            <View style={styles.syncBannerContent}>
+              <Text style={styles.syncBannerTitle}>Sync Pending</Text>
+              <Text style={styles.syncBannerText}>
+                {stats.unsyncedCount} record{stats.unsyncedCount > 1 ? 's' : ''} queued — will sync when online
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {/* Menu Grid */}
+        <View style={styles.grid}>
+          {menuItems.map((item, i) => (
+            <Animated.View
+              key={item.route}
+              style={[
+                styles.cardWrapper,
+                {
+                  opacity: cardAnims[i].opacity,
+                  transform: [{ translateY: cardAnims[i].translateY }],
+                }
+              ]}
             >
-              {/* Subtle gradient-like accent overlay */}
-              <View style={[styles.cardGradientOverlay, { backgroundColor: item.color + '08' }]} />
-              <View style={[styles.cardGlowTop, { backgroundColor: item.color + '06' }]} />
+              <TouchableOpacity
+                style={[styles.card, {
+                  borderColor: item.color + '25',
+                  shadowColor: item.color,
+                }]}
+                onPress={() => nav.navigate(item.route)}
+                activeOpacity={0.7}
+              >
+                {/* Subtle gradient-like accent overlay */}
+                <View style={[styles.cardGradientOverlay, { backgroundColor: item.color + '08' }]} />
+                <View style={[styles.cardGlowTop, { backgroundColor: item.color + '06' }]} />
 
-              <View style={[styles.cardIcon, { backgroundColor: item.color + '22' }]}>
-                <Text style={styles.cardIconText}>{item.icon}</Text>
-              </View>
-              <Text style={styles.cardTitle}>{item.title}</Text>
-              <Text style={styles.cardSubtitle}>{item.subtitle}</Text>
-              <View style={[styles.cardArrow, { backgroundColor: item.color }]}>
-                <View style={[styles.cardArrowGlow, { backgroundColor: item.color }]} />
-                <Text style={styles.cardArrowText}>→</Text>
-              </View>
-            </TouchableOpacity>
-          </Animated.View>
-        ))}
-      </View>
+                <View style={[styles.cardIcon, { backgroundColor: item.color + '22' }]}>
+                  <Text style={styles.cardIconText}>{item.icon}</Text>
+                </View>
+                <Text style={styles.cardTitle}>{item.title}</Text>
+                <Text style={styles.cardSubtitle}>{item.subtitle}</Text>
+                <View style={[styles.cardArrow, { backgroundColor: item.color }]}>
+                  <View style={[styles.cardArrowGlow, { backgroundColor: item.color }]} />
+                  <Text style={styles.cardArrowText}>→</Text>
+                </View>
+              </TouchableOpacity>
+            </Animated.View>
+          ))}
+        </View>
 
-      {/* Footer */}
-      <View style={[styles.footer, { paddingBottom: insets.bottom + 16 }]}>
-        <View style={styles.footerLine} />
-        <Text style={styles.footerText}>
-          All data encrypted • Models: ~12.7 MiB • No internet required
-        </Text>
-        <Text style={styles.footerVersion}>PRAHARI v1.0.0</Text>
-      </View>
+        {/* Footer */}
+        <View style={[styles.footer, { paddingBottom: insets.bottom + 16 }]}>
+          <View style={styles.footerLine} />
+          <Text style={styles.footerText}>
+            All data encrypted • Models: ~12.7 MiB • No internet required
+          </Text>
+          <Text style={styles.footerVersion}>PRAHARI v1.0.0</Text>
+        </View>
+      </ScrollView>
 
       {/* Floating Benchmark Button */}
       <Animated.View style={[styles.fabContainer, {
@@ -362,6 +368,12 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: UI_COLORS.BACKGROUND,
+  },
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
   },
 
   /* Header */
@@ -486,7 +498,6 @@ const styles = StyleSheet.create({
 
   /* Menu Grid */
   grid: {
-    flex: 1,
     gap: 12,
     paddingHorizontal: 20,
   },
