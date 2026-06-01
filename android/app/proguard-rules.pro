@@ -1,25 +1,18 @@
-# android/app/proguard-rules.pro
-# PRAHARI Hackathon — Aggressive size optimization
+# PRAHARI Hackathon - aggressive release size optimization
 
-# ─── TensorFlow Lite ─────────────────────────────────────────────────────────
+# TensorFlow Lite / native inference
 -keep class org.tensorflow.lite.** { *; }
 -dontwarn org.tensorflow.**
 
-# ─── SQLCipher ────────────────────────────────────────────────────────────────
--keep class net.sqlcipher.** { *; }
--keep class net.sqlcipher.database.** { *; }
-
-# ─── React Native (minimal keeps) ────────────────────────────────────────────
--keep class com.facebook.react.** { *; }
--keep class com.facebook.hermes.** { *; }
--keep class com.facebook.jni.** { *; }
+# React Native libraries ship their own consumer ProGuard rules. Avoid keeping
+# all RN classes here, otherwise R8 cannot shrink unused bridge/codegen paths.
 -dontwarn com.facebook.**
 
-# ─── General ──────────────────────────────────────────────────────────────────
+# General
 -keepattributes *Annotation*
 -keep public class * extends java.lang.Exception
 
-# ─── Aggressive optimizations ─────────────────────────────────────────────────
+# Aggressive optimizations
 -optimizationpasses 5
 -allowaccessmodification
 -repackageclasses ''

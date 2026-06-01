@@ -21,6 +21,7 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0.0"
+        resConfigs "en"
 
         // Required for SQLCipher encryption
         ndk {
@@ -69,8 +70,18 @@ android {
     }
 
     packaging {
+        jniLibs {
+            useLegacyPackaging true
+        }
         resources {
             pickFirsts += ['**/libc++_shared.so', '**/libfbjni.so']
+            excludes += [
+                'META-INF/AL2.0',
+                'META-INF/LGPL2.1',
+                'META-INF/LICENSE*',
+                'META-INF/NOTICE*',
+                'META-INF/*.kotlin_module',
+            ]
         }
     }
 }

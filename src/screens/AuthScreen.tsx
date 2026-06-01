@@ -8,9 +8,9 @@ import {
 } from 'react-native';
 import {
   Camera, useCameraDevice, useCameraPermission,
-  useFrameProcessor,
+  runAtTargetFps, useFrameProcessor,
 } from 'react-native-vision-camera';
-import { useSharedValue, runOnJS } from 'react-native-reanimated';
+import { Worklets } from 'react-native-worklets-core';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle } from 'react-native-svg';
 import { FaceOverlay } from '../components/FaceOverlay';
@@ -20,7 +20,7 @@ import { useFaceRecognition } from '../hooks/useFaceRecognition';
 import { UI_COLORS } from '../constants';
 import type { FaceDetection, LivenessChallenge as ChallengeType } from '../types';
 
-const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
+const { width: SCREEN_W } = Dimensions.get('window');
 const OVAL_W = SCREEN_W * 0.72;
 const OVAL_H = OVAL_W * 1.3;
 
@@ -57,7 +57,6 @@ export const AuthScreen: React.FC = () => {
   const {
     isReady,
     processFrame,
-    startEnrollment,
   } = useFaceRecognition({
     onStateChange: setAuthState,
     onChallengeChange: setCurrentChallenge,
@@ -119,14 +118,19 @@ export const AuthScreen: React.FC = () => {
 
   // ─── Frame Processor ──────────────────────────────────────────────────────
 
+  const processFrameOnJS = Worklets.createRunOnJS(processFrame);
+
   const frameProcessor = useFrameProcessor((frame) => {
     'worklet';
     if (!isReady) return;
-    const width = frame.width;
-    const height = frame.height;
-    const buffer = frame.toArrayBuffer();
-    runOnJS(processFrame)(buffer, width, height);
-  }, [isReady, processFrame]);
+    runAtTargetFps(3, () => {
+      'worklet';
+      const width = frame.width;
+      const height = frame.height;
+      const buffer = frame.toArrayBuffer();
+      processFrameOnJS(buffer, width, height);
+    });
+  }, [isReady, processFrameOnJS]);
 
   // ─── Status Messages ──────────────────────────────────────────────────────
 
@@ -139,7 +143,7 @@ export const AuthScreen: React.FC = () => {
       case 'LIVENESS_ACTIVE': return currentChallenge ? challengeText(currentChallenge) : 'Follow the prompt';
       case 'RECOGNIZING': return 'Identifying...';
       case 'SUCCESS': return `Welcome, ${resultName}`;
-      case 'FAILED': return 'Not recognized. Try again.';
+      case 'FAILED': return statusMessage || 'Not recognized. Try again.';
       case 'SPOOF_DETECTED': return 'Spoof attempt detected';
       default: return '';
     }
@@ -220,6 +224,7 @@ export const AuthScreen: React.FC = () => {
         photo={false}
         video={false}
         audio={false}
+        fps={8}
         pixelFormat="rgb"
       />
 

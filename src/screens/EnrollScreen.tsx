@@ -4,28 +4,24 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, TextInput, StyleSheet, TouchableOpacity,
-  Alert, ScrollView, ActivityIndicator, Dimensions, StatusBar,
+  Alert, ScrollView, ActivityIndicator, StatusBar,
   Animated, Easing,
 } from 'react-native';
 import {
-  Camera, useCameraDevice, useFrameProcessor, useCameraPermission,
+  Camera, runAtTargetFps, useCameraDevice, useFrameProcessor, useCameraPermission,
 } from 'react-native-vision-camera';
-import { runOnJS } from 'react-native-reanimated';
+import { Worklets } from 'react-native-worklets-core';
 import { useNavigation } from '@react-navigation/native';
 import DeviceInfo from 'react-native-device-info';
 import { v4 as uuid } from 'uuid';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Circle, Path, Defs, Stop, G, Rect } from 'react-native-svg';
+import Svg, { Circle, Path, Rect } from 'react-native-svg';
 import { FaceEngine } from '../services/FaceEngine';
 import { DatabaseService } from '../services/DatabaseService';
 import { UI_COLORS } from '../constants';
 import type { FaceEmbedding } from '../types';
 
 const CAPTURE_COUNT = 5; // Capture 5 embeddings and average for robustness
-const { width: SCREEN_W } = Dimensions.get('window');
-
-const AnimatedCircle = Animated.createAnimatedComponent(Circle);
-
 // ─── Step Progress Indicator ────────────────────────────────────────────────
 const STEPS = ['Form', 'Capture', 'Done'] as const;
 
@@ -414,15 +410,20 @@ export const EnrollScreen: React.FC = () => {
     }
   }, [name, employeeId]);
 
+  const handleCaptureFrameDataOnJS = Worklets.createRunOnJS(handleCaptureFrameData);
+
   const frameProcessor = useFrameProcessor((frame) => {
     'worklet';
     // NOTE: Use stepRef instead of state.step — worklets run on a separate thread
     // and cannot access React state directly
-    const width = frame.width;
-    const height = frame.height;
-    const buffer = frame.toArrayBuffer();
-    runOnJS(handleCaptureFrameData)(buffer, width, height);
-  }, [handleCaptureFrameData]);
+    runAtTargetFps(2, () => {
+      'worklet';
+      const width = frame.width;
+      const height = frame.height;
+      const buffer = frame.toArrayBuffer();
+      handleCaptureFrameDataOnJS(buffer, width, height);
+    });
+  }, [handleCaptureFrameDataOnJS]);
 
   const finalizeEnrollment = async (embeddings: number[][]) => {
     setState(prev => {
@@ -612,6 +613,7 @@ export const EnrollScreen: React.FC = () => {
             style={StyleSheet.absoluteFill}
             device={device} isActive={state.step === 'CAPTURE'}
             frameProcessor={frameProcessor}
+            fps={5}
             pixelFormat="rgb"
           />
         )}

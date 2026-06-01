@@ -6,6 +6,27 @@
 
 ---
 
+## Hackathon Size Budget
+
+The hackathon target of ~20 MB is treated as the AI model footprint, not the full React Native shell. PRAHARI's bundled offline AI models are ~12.7 MiB / ~13.3 MB total, leaving headroom for future calibration files while staying under the target.
+
+| Asset | Purpose | Size |
+|-------|---------|------|
+| `adaface_mobilone_s0_int8.tflite` | Face embedding / recognition | ~5.0 MiB |
+| `antispoof_mobilenet_int8.tflite` | Passive anti-spoof detection | ~3.9 MiB |
+| `face_mesh_lite.tflite` | Blink, smile, head-turn liveness | ~3.6 MiB |
+| `yolov8_face_nano_int8.tflite` | Face detection | ~0.2 MiB |
+| **Total** | **Offline AI footprint** | **~12.7 MiB** |
+
+Android release builds are optimized with Hermes, R8 full mode, resource shrinking, arm64-only native packaging, compressed native libraries, and removal of unused native modules. For judge submission, build the release APK from GitHub Actions or locally with:
+
+```bash
+cd android
+./gradlew assembleRelease --no-daemon -x lint
+```
+
+---
+
 ## Architecture Overview
 
 ```

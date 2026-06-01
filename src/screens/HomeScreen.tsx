@@ -4,7 +4,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity,
-  Dimensions, Animated, Easing,
+  Animated, Easing,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -16,7 +16,6 @@ import { BenchmarkOverlay } from '../components/BenchmarkOverlay';
 import type { SyncStatus } from '../types';
 import type { RootStackParamList } from '../../App';
 
-const { width: W } = Dimensions.get('window');
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 interface Stats {
@@ -293,7 +292,7 @@ export const HomeScreen: React.FC = () => {
       <View style={[styles.footer, { paddingBottom: insets.bottom + 16 }]}>
         <View style={styles.footerLine} />
         <Text style={styles.footerText}>
-          All data encrypted • Models: ~8.5 MB • No internet required
+          All data encrypted • Models: ~12.7 MiB • No internet required
         </Text>
         <Text style={styles.footerVersion}>PRAHARI v1.0.0</Text>
       </View>
@@ -370,9 +369,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 24,
-    paddingTop: 16,
-    paddingBottom: 20,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 16,
   },
   headerLeft: {
     flex: 1,
@@ -387,10 +386,11 @@ const styles = StyleSheet.create({
     marginRight: 4,
   },
   appName: {
-    fontSize: 30,
+    fontFamily: 'sans-serif',
+    fontSize: 26,
     fontWeight: '900',
     color: UI_COLORS.TEXT_PRIMARY,
-    letterSpacing: 7,
+    letterSpacing: 2,
   },
   accentBarLeft: {
     width: 3,
@@ -407,11 +407,12 @@ const styles = StyleSheet.create({
     marginLeft: 4,
   },
   tagline: {
+    fontFamily: 'sans-serif',
     fontSize: 11,
     color: UI_COLORS.TEXT_SECONDARY,
     marginTop: 4,
-    letterSpacing: 1.5,
-    marginLeft: 38, // align under the title text (after shield + bars)
+    letterSpacing: 0.4,
+    marginLeft: 34, // align under the title text (after shield + bars)
   },
   onlinePill: {
     flexDirection: 'row',
@@ -436,9 +437,9 @@ const styles = StyleSheet.create({
   /* Stats Row */
   statsRow: {
     flexDirection: 'row',
-    gap: 10,
-    paddingHorizontal: 24,
-    marginBottom: 14,
+    gap: 8,
+    paddingHorizontal: 20,
+    marginBottom: 12,
   },
 
   /* Sync Banner */
@@ -486,22 +487,19 @@ const styles = StyleSheet.create({
   /* Menu Grid */
   grid: {
     flex: 1,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 14,
-    paddingHorizontal: 24,
-    alignContent: 'flex-start',
+    gap: 12,
+    paddingHorizontal: 20,
   },
   cardWrapper: {
-    width: (W - 62) / 2,
+    width: '100%',
   },
   card: {
     width: '100%',
     backgroundColor: UI_COLORS.SURFACE,
-    borderRadius: 22,
-    padding: 18,
+    borderRadius: 14,
+    padding: 16,
     borderWidth: 1,
-    gap: 6,
+    gap: 5,
     overflow: 'hidden',
     // Shadow / elevation for glow
     shadowOffset: { width: 0, height: 4 },
@@ -511,7 +509,7 @@ const styles = StyleSheet.create({
   },
   cardGradientOverlay: {
     ...StyleSheet.absoluteFillObject,
-    borderRadius: 22,
+    borderRadius: 14,
   },
   cardGlowTop: {
     position: 'absolute',
@@ -534,16 +532,18 @@ const styles = StyleSheet.create({
     fontSize: 24,
   },
   cardTitle: {
+    fontFamily: 'sans-serif',
     color: UI_COLORS.TEXT_PRIMARY,
-    fontSize: 15,
-    fontWeight: '700',
-    letterSpacing: 0.3,
+    fontSize: 17,
+    fontWeight: '800',
+    letterSpacing: 0,
   },
   cardSubtitle: {
+    fontFamily: 'sans-serif',
     color: UI_COLORS.TEXT_SECONDARY,
-    fontSize: 11,
-    lineHeight: 16,
-    letterSpacing: 0.2,
+    fontSize: 13,
+    lineHeight: 18,
+    letterSpacing: 0,
   },
   cardArrow: {
     width: 32,
@@ -575,8 +575,8 @@ const styles = StyleSheet.create({
   /* Footer */
   footer: {
     alignItems: 'center',
-    paddingHorizontal: 24,
-    paddingTop: 10,
+    paddingHorizontal: 20,
+    paddingTop: 14,
   },
   footerLine: {
     width: 40,
@@ -586,13 +586,15 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   footerText: {
+    fontFamily: 'sans-serif',
     color: UI_COLORS.TEXT_TERTIARY,
-    fontSize: 10,
+    fontSize: 11,
     textAlign: 'center',
-    letterSpacing: 0.4,
+    letterSpacing: 0,
     lineHeight: 16,
   },
   footerVersion: {
+    fontFamily: 'sans-serif',
     color: UI_COLORS.ACCENT,
     fontSize: 10,
     fontWeight: '700',

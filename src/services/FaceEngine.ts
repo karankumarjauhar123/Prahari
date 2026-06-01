@@ -2,7 +2,6 @@
 // Core AI inference engine — AdaFace + YOLOv8-face via TFLite
 
 import { loadTensorflowModel, TensorflowModel } from 'react-native-fast-tflite';
-import RNFS from 'react-native-fs';
 import { MODEL_CONFIG, QUALITY_CONFIG } from '../constants';
 import type {
   FaceDetection,
