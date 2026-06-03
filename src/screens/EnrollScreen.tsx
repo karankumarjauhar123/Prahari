@@ -5,7 +5,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, TextInput, StyleSheet, TouchableOpacity,
   Alert, ScrollView, ActivityIndicator, StatusBar,
-  Animated, Easing,
+  Animated, Easing, Vibration, Dimensions,
 } from 'react-native';
 import {
   Camera, runAtTargetFps, useCameraDevice, useFrameProcessor, useCameraPermission,
@@ -15,12 +15,12 @@ import { useNavigation } from '@react-navigation/native';
 import DeviceInfo from 'react-native-device-info';
 import { v4 as uuid } from 'uuid';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Circle, Path, Rect } from 'react-native-svg';
+import Svg, { Circle, Path, Rect, Defs, Mask } from 'react-native-svg';
 import { FaceEngine } from '../services/FaceEngine';
 import { DatabaseService } from '../services/DatabaseService';
 import { UI_COLORS, MODEL_CONFIG, QUALITY_CONFIG } from '../constants';
 import {
-  wDetectFace, wCheckFaceQuality, wExtractEmbedding,
+  wDetectFace, wCheckFaceQuality, wExtractEmbedding, wExtractROI, wLaplacianVariance,
 } from '../utils/faceWorklets';
 import type { FaceEmbedding } from '../types';
 
@@ -256,6 +256,12 @@ const ProgressRing: React.FC<{
 
 // ─── Main EnrollScreen ─────────────────────────────────────────────────────
 
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
+const GUIDE_SIZE = 300; // Larger scanning circle (diameter)
+const cx = SCREEN_W / 2;
+const cy = SCREEN_H / 2 - 30; // Slightly above center to make room for bottom stats
+const radius = GUIDE_SIZE / 2;
+
 interface EnrollState {
   step: 'FORM' | 'CAPTURE' | 'PROCESSING' | 'DONE' | 'ERROR';
   capturedCount: number;
@@ -279,6 +285,16 @@ export const EnrollScreen: React.FC = () => {
   });
   const [isCameraLoaded, setIsCameraLoaded] = useState(false);
   const [modelsLoaded, setModelsLoaded] = useState(false);
+  const [statusMessage, setStatusMessage] = useState('Position your face in the circle');
+  const [frameStatus, setFrameStatus] = useState({
+    hasFace: false,
+    isCentered: false,
+    isBright: false,
+    isFocused: false,
+    qualityPass: false,
+    qualityScore: 0,
+  });
+
   const isCapturingRef = useRef(false);
   const capturedEmbeddingsRef = useRef<number[][]>([]);
   const stepRef = useRef<EnrollState['step']>('FORM');
@@ -390,6 +406,11 @@ export const EnrollScreen: React.FC = () => {
     if (capturedEmbeddingsRef.current.length >= CAPTURE_COUNT) return;
     capturedEmbeddingsRef.current.push(embedding);
 
+    // Haptic vibration feedback for each sample capture
+    try {
+      Vibration.vibrate(30);
+    } catch {}
+
     setState(prev => {
       const next = {
         ...prev,
@@ -405,6 +426,37 @@ export const EnrollScreen: React.FC = () => {
   }, [name, employeeId]);
 
   const handleEmbeddingOnJS = Worklets.createRunOnJS(handleEmbeddingResult);
+
+  const handleFrameStatus = useCallback((
+    hasFace: boolean,
+    isCentered: boolean,
+    isBright: boolean,
+    isFocused: boolean,
+    qualityPass: boolean,
+    reason: string | null,
+    qualityScore: number
+  ) => {
+    if (stepRef.current !== 'CAPTURE') return;
+    
+    setFrameStatus({
+      hasFace,
+      isCentered,
+      isBright,
+      isFocused,
+      qualityPass,
+      qualityScore,
+    });
+
+    if (!hasFace) {
+      setStatusMessage('No face detected');
+    } else if (!qualityPass) {
+      setStatusMessage(reason || 'Adjust position');
+    } else {
+      setStatusMessage('Capturing... hold still');
+    }
+  }, []);
+
+  const handleFrameStatusOnJS = Worklets.createRunOnJS(handleFrameStatus);
 
   // Get model references (JSI host objects — safe to capture in worklet closure)
   const detModel = modelsLoaded ? FaceEngine.detectionModel : null;
@@ -424,22 +476,60 @@ export const EnrollScreen: React.FC = () => {
         // Step 1: Detect face (synchronous — runs in worklet thread)
         const face = wDetectFace(pixels, width, height, detModel);
         if (!face) {
-          console.log('[EnrollFP] No face detected in frame ' + width + 'x' + height);
+          handleFrameStatusOnJS(false, false, false, false, false, 'No face detected', 0);
           return;
         }
-        console.log('[EnrollFP] Face detected: conf=' + face.confidence.toFixed(2) + ' size=' + Math.min(face.width, face.height).toFixed(0));
 
-        // Step 2: Quality check (synchronous)
-        const quality = wCheckFaceQuality(pixels, face, width, height);
-        if (!quality.pass) {
-          console.log('[EnrollFP] Quality failed: ' + (quality.reason || 'unknown') + ' score=' + quality.score);
-          return;
+        // Step 2: Extract face metrics for quality check
+        const faceSize = Math.min(face.width, face.height);
+        const centerX = face.x + face.width / 2;
+        const centerY = face.y + face.height / 2;
+        const dx = Math.abs(centerX / width - 0.5);
+        const dy = Math.abs(centerY / height - 0.5);
+        
+        const isCentered = dx <= QUALITY_CONFIG.FACE_CENTER_TOLERANCE && dy <= QUALITY_CONFIG.FACE_CENTER_TOLERANCE;
+        const isLargeEnough = faceSize >= QUALITY_CONFIG.MIN_FACE_SIZE_PX;
+
+        const roi = wExtractROI(pixels, face, width, height);
+        const brightness = roi.reduce((a: number, b: number) => a + b, 0) / roi.length;
+        const isBright = brightness >= QUALITY_CONFIG.MIN_BRIGHTNESS && brightness <= QUALITY_CONFIG.MAX_BRIGHTNESS;
+
+        const roiW = Math.min(width - Math.max(0, Math.floor(face.x)), Math.ceil(face.width));
+        const roiH = Math.min(height - Math.max(0, Math.floor(face.y)), Math.ceil(face.height));
+        const blur = wLaplacianVariance(roi, roiW, roiH);
+        const isFocused = blur >= QUALITY_CONFIG.MIN_BLUR_SCORE;
+
+        let qualityPass = true;
+        let reason: string | null = null;
+        let qualityScore = 0;
+
+        if (!isLargeEnough) {
+          qualityPass = false;
+          reason = 'Move closer to camera';
+        } else if (!isCentered) {
+          qualityPass = false;
+          reason = 'Center your face';
+        } else if (!isBright) {
+          qualityPass = false;
+          reason = brightness < QUALITY_CONFIG.MIN_BRIGHTNESS 
+            ? 'Too dark — find better lighting' 
+            : 'Too bright — avoid direct light';
+        } else if (!isFocused) {
+          qualityPass = false;
+          reason = 'Image too blurry — hold still';
         }
-        console.log('[EnrollFP] Quality passed, extracting embedding...');
+
+        if (qualityPass) {
+          qualityScore = Math.min(1.0, (blur / 300) * 0.4 + ((brightness - 35) / 185) * 0.3 + (faceSize / 200) * 0.3);
+        }
+
+        // Send status indicators to JS
+        handleFrameStatusOnJS(true, isCentered, isBright, isFocused, qualityPass, reason, qualityScore);
+
+        if (!qualityPass) return;
 
         // Step 3: Extract embedding (synchronous)
         const embedding = wExtractEmbedding(pixels, face, width, recModel);
-        console.log('[EnrollFP] Embedding extracted, length=' + embedding.length);
 
         // Only a number[] crosses to JS — fully supported as shared value
         handleEmbeddingOnJS(embedding);
@@ -447,7 +537,7 @@ export const EnrollScreen: React.FC = () => {
         console.error('[EnrollFP] Frame processing error:', e?.message || e);
       }
     });
-  }, [detModel, recModel, handleEmbeddingOnJS]);
+  }, [detModel, recModel, handleEmbeddingOnJS, handleFrameStatusOnJS]);
 
   const finalizeEnrollment = async (embeddings: number[][]) => {
     setState(prev => {
@@ -633,7 +723,7 @@ export const EnrollScreen: React.FC = () => {
     const progress = state.capturedCount / CAPTURE_COUNT;
     const scanLineTranslate = scanLineAnim.interpolate({
       inputRange: [0, 1],
-      outputRange: [-130, 130],
+      outputRange: [-radius + 15, radius - 15],
     });
 
     const onCancel = () => {
@@ -647,98 +737,209 @@ export const EnrollScreen: React.FC = () => {
         <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
         <EnrollCameraFeed
-          isActive={state.step === 'CAPTURE'}
-          frameProcessor={frameProcessor}
-          onCancel={onCancel}
-          onCameraLoaded={setIsCameraLoaded}
-          hasPermission={hasPermission}
+           isActive={state.step === 'CAPTURE'}
+           frameProcessor={frameProcessor}
+           onCancel={onCancel}
+           onCameraLoaded={setIsCameraLoaded}
+           hasPermission={hasPermission}
         />
 
-        {/* Dark overlay - only display when camera is loaded */}
+        {/* Dark overlay with circular cutout - only display when camera is loaded */}
         {isCameraLoaded && (
-          <View style={[styles.captureOverlay, { paddingTop: insets.top + 16 }]}>
-            {/* Top info bar */}
-            <View style={styles.captureTopBar}>
-              <TouchableOpacity
-                onPress={onCancel}
-                style={styles.captureBackBtn}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.captureBackText}>✕</Text>
-              </TouchableOpacity>
-              <View style={styles.captureBadge}>
-                <Text style={styles.captureBadgeText}>ENROLLING</Text>
-              </View>
-            </View>
+          <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+            <Svg width={SCREEN_W} height={SCREEN_H} style={StyleSheet.absoluteFill}>
+              <Defs>
+                <Mask id="circleMask">
+                  <Rect x="0" y="0" width={SCREEN_W} height={SCREEN_H} fill="white" />
+                  <Circle cx={cx} cy={cy} r={radius} fill="black" />
+                </Mask>
+              </Defs>
 
-            {/* Title */}
-            <Text style={styles.captureTitle}>
-              {state.step === 'PROCESSING' ? 'Processing...' : 'Look at the Camera'}
-            </Text>
-            <Text style={styles.captureSubtitleInfo}>
-              {state.step === 'PROCESSING'
-                ? 'Encrypting and storing biometric data'
-                : 'Keep your face centered and well-lit'}
-            </Text>
+              {/* Semi-transparent dark background with clear circle hole */}
+              <Rect
+                x="0"
+                y="0"
+                width={SCREEN_W}
+                height={SCREEN_H}
+                fill="rgba(8,8,26,0.72)"
+                mask="url(#circleMask)"
+              />
 
-            {/* Center face guide with progress ring */}
-            <View style={styles.faceGuideContainer}>
+              {/* Outer subtle glow ring */}
+              <Circle
+                cx={cx}
+                cy={cy}
+                r={radius + 15}
+                fill="none"
+                stroke={UI_COLORS.ACCENT}
+                strokeWidth={1}
+                opacity={0.15}
+              />
+
+              {/* Main circular border */}
+              <Circle
+                cx={cx}
+                cy={cy}
+                r={radius}
+                fill="none"
+                stroke={progress > 0 ? UI_COLORS.SUCCESS : UI_COLORS.ACCENT}
+                strokeWidth={2.5}
+                opacity={0.8}
+              />
+
+              {/* Inner dotted decorative ring */}
+              <Circle
+                cx={cx}
+                cy={cy}
+                r={radius - 8}
+                fill="none"
+                stroke={UI_COLORS.ACCENT}
+                strokeWidth={1}
+                strokeDasharray="6 4"
+                opacity={0.3}
+              />
+
+              {/* Green progress ring layered on top */}
+              {progress > 0 && (
+                <Circle
+                  cx={cx}
+                  cy={cy}
+                  r={radius}
+                  fill="none"
+                  stroke={UI_COLORS.SUCCESS}
+                  strokeWidth={5}
+                  strokeDasharray={`${2 * Math.PI * radius}`}
+                  strokeDashoffset={2 * Math.PI * radius * (1 - progress)}
+                  strokeLinecap="round"
+                  rotation="-90"
+                  origin={`${cx}, ${cy}`}
+                  opacity={0.9}
+                />
+              )}
+            </Svg>
+
+            {/* Scan line overlay inside the cutout */}
+            {state.step === 'CAPTURE' && (
               <Animated.View
                 style={[
-                  styles.faceGuideOuter,
-                  { transform: [{ scale: pulseAnim }] },
+                  styles.scanLine,
+                  {
+                    transform: [{ translateY: scanLineTranslate }],
+                    width: radius * 2 - 20,
+                    top: cy,
+                    left: cx - (radius - 10),
+                    position: 'absolute',
+                  },
                 ]}
-              >
-                <ProgressRing progress={progress} size={280} strokeWidth={6} />
+              />
+            )}
 
-                {/* Scan line overlay */}
-                {state.step === 'CAPTURE' && (
-                  <Animated.View
-                    style={[
-                      styles.scanLine,
-                      { transform: [{ translateY: scanLineTranslate }] },
-                    ]}
-                  />
-                )}
-              </Animated.View>
+            {/* Top info bar */}
+            <View style={[styles.captureTopContainer, { paddingTop: insets.top + 16 }]}>
+              <View style={styles.captureTopBar}>
+                <TouchableOpacity
+                  onPress={onCancel}
+                  style={styles.captureBackBtn}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.captureBackText}>✕</Text>
+                </TouchableOpacity>
+                <View style={styles.captureBadge}>
+                  <Text style={styles.captureBadgeText}>BIOMETRIC ENROLLMENT</Text>
+                </View>
+              </View>
+
+              {/* Title */}
+              <Text style={styles.captureTitle}>
+                {state.step === 'PROCESSING' ? 'Processing...' : 'Face Registration'}
+              </Text>
+              <Text style={styles.captureSubtitleInfo}>
+                {state.step === 'PROCESSING'
+                  ? 'Averaging and encrypting biometric credentials'
+                  : 'Align your face in the circular scanner zone'}
+              </Text>
+            </View>
+
+            {/* Bottom dashboard container */}
+            <View style={[styles.captureBottomContainer, { paddingBottom: insets.bottom + 20 }]}>
+              
+              {/* Aadhaar-style Real-time indicators dashboard */}
+              {state.step === 'CAPTURE' && (
+                <View style={styles.dashboardCard}>
+                  <Text style={styles.dashboardTitle}>REAL-TIME BIOMETRIC QUALITY</Text>
+                  
+                  <View style={styles.metricsRow}>
+                    {/* Position indicator */}
+                    <View style={styles.metricItem}>
+                      <Text style={[styles.metricDot, frameStatus.isCentered ? styles.metricDotGreen : styles.metricDotRed]}>●</Text>
+                      <Text style={styles.metricLabel}>ALIGNMENT</Text>
+                      <Text style={[styles.metricValue, frameStatus.isCentered ? styles.textGreen : styles.textRed]}>
+                        {frameStatus.isCentered ? 'Centered' : 'Adjust'}
+                      </Text>
+                    </View>
+                    
+                    <View style={styles.metricDivider} />
+
+                    {/* Lighting indicator */}
+                    <View style={styles.metricItem}>
+                      <Text style={[styles.metricDot, frameStatus.isBright ? styles.metricDotGreen : styles.metricDotRed]}>●</Text>
+                      <Text style={styles.metricLabel}>LIGHTING</Text>
+                      <Text style={[styles.metricValue, frameStatus.isBright ? styles.textGreen : styles.textRed]}>
+                        {frameStatus.isBright ? 'Optimal' : 'Adjust'}
+                      </Text>
+                    </View>
+
+                    <View style={styles.metricDivider} />
+
+                    {/* Sharpness/Focus indicator */}
+                    <View style={styles.metricItem}>
+                      <Text style={[styles.metricDot, frameStatus.isFocused ? styles.metricDotGreen : styles.metricDotRed]}>●</Text>
+                      <Text style={styles.metricLabel}>STABILITY</Text>
+                      <Text style={[styles.metricValue, frameStatus.isFocused ? styles.textGreen : styles.textRed]}>
+                        {frameStatus.isFocused ? 'Steady' : 'Hold Still'}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              )}
+
+              {/* Status message pill */}
+              <View style={styles.statusPill}>
+                <Text style={styles.statusPillDot}>●</Text>
+                <Text style={styles.statusPillText}>{statusMessage}</Text>
+              </View>
 
               {/* Sample counter */}
               <View style={styles.sampleCountContainer}>
-                <Text style={styles.sampleCountLabel}>SAMPLE</Text>
+                <Text style={styles.sampleCountLabel}>SAMPLES SECURED</Text>
                 <Text style={styles.sampleCountValue}>
-                  {Math.min(state.capturedCount + (state.step === 'PROCESSING' ? 0 : 1), CAPTURE_COUNT)}
+                  {Math.min(state.capturedCount, CAPTURE_COUNT)}
                   <Text style={styles.sampleCountTotal}>/{CAPTURE_COUNT}</Text>
                 </Text>
               </View>
+
+              {/* Progress dots row */}
+              <View style={styles.progressRow}>
+                {Array.from({ length: CAPTURE_COUNT }).map((_, i) => (
+                  <View key={i} style={styles.progressDotContainer}>
+                    <View
+                      style={[
+                        styles.progressDot,
+                        i < state.capturedCount && styles.progressDotDone,
+                        i === state.capturedCount && state.step === 'CAPTURE' && styles.progressDotActive,
+                      ]}
+                     />
+                     {i < state.capturedCount && (
+                       <Text style={styles.progressDotCheck}>✓</Text>
+                     )}
+                  </View>
+                ))}
+              </View>
+
+              {state.step === 'PROCESSING' && (
+                <ActivityIndicator color={UI_COLORS.SUCCESS} size="large" style={{ marginTop: 12 }} />
+              )}
             </View>
-
-            {/* Progress dots row */}
-            <View style={styles.progressRow}>
-              {Array.from({ length: CAPTURE_COUNT }).map((_, i) => (
-                <View key={i} style={styles.progressDotContainer}>
-                  <View
-                    style={[
-                      styles.progressDot,
-                      i < state.capturedCount && styles.progressDotDone,
-                      i === state.capturedCount && state.step === 'CAPTURE' && styles.progressDotActive,
-                    ]}
-                  />
-                  {i < state.capturedCount && (
-                    <Text style={styles.progressDotCheck}>✓</Text>
-                  )}
-                </View>
-              ))}
-            </View>
-
-            <Text style={styles.captureSubtext}>
-              {state.step === 'PROCESSING'
-                ? 'Saving encrypted embedding...'
-                : `Captured ${state.capturedCount} of ${CAPTURE_COUNT} samples`}
-            </Text>
-
-            {state.step === 'PROCESSING' && (
-              <ActivityIndicator color={UI_COLORS.SUCCESS} size="large" style={{ marginTop: 20 }} />
-            )}
           </View>
         )}
       </View>
@@ -998,12 +1199,103 @@ const styles = StyleSheet.create({
   },
 
   // ─── Capture overlay ──────────────────────────────────────────────
-  captureOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(8,8,26,0.75)',
+  captureTopContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
     alignItems: 'center',
-    justifyContent: 'flex-start',
     paddingHorizontal: 24,
+  },
+  captureBottomContainer: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  dashboardCard: {
+    backgroundColor: 'rgba(18, 18, 42, 0.85)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 16,
+    padding: 12,
+    width: '90%',
+    marginBottom: 14,
+    alignItems: 'center',
+  },
+  dashboardTitle: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: UI_COLORS.TEXT_SECONDARY,
+    letterSpacing: 1.5,
+    marginBottom: 10,
+  },
+  metricsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    width: '100%',
+  },
+  metricItem: {
+    alignItems: 'center',
+    flexDirection: 'column',
+    flex: 1,
+  },
+  metricDot: {
+    fontSize: 8,
+    marginBottom: 2,
+  },
+  metricDotGreen: {
+    color: UI_COLORS.SUCCESS,
+  },
+  metricDotRed: {
+    color: UI_COLORS.ERROR,
+  },
+  metricLabel: {
+    fontSize: 8,
+    fontWeight: '700',
+    color: UI_COLORS.TEXT_TERTIARY,
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
+  metricValue: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  metricDivider: {
+    width: 1,
+    height: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  textGreen: {
+    color: UI_COLORS.SUCCESS,
+  },
+  textRed: {
+    color: UI_COLORS.ERROR,
+  },
+  statusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    marginBottom: 12,
+  },
+  statusPillDot: {
+    color: UI_COLORS.ACCENT,
+    marginRight: 6,
+    fontSize: 10,
+  },
+  statusPillText: {
+    color: '#FFF',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
   captureTopBar: {
     flexDirection: 'row',
@@ -1051,27 +1343,15 @@ const styles = StyleSheet.create({
     color: UI_COLORS.TEXT_SECONDARY,
     fontSize: 13,
     textAlign: 'center',
-    marginBottom: 32,
+    marginBottom: 12,
   },
 
   // Face guide
-  faceGuideContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 32,
-  },
-  faceGuideOuter: {
-    width: 280,
-    height: 280,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   scanLine: {
     position: 'absolute',
-    width: 220,
-    height: 2,
+    height: 2.5,
     backgroundColor: UI_COLORS.ACCENT,
-    opacity: 0.4,
+    opacity: 0.5,
     borderRadius: 1,
   },
 
