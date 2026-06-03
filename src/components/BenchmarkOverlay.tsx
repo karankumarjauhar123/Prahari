@@ -9,6 +9,8 @@ import {
 import DeviceInfo from 'react-native-device-info';
 import { Benchmark } from '../utils/Benchmark';
 import { UI_COLORS } from '../constants';
+import { FaceEngine } from '../services/FaceEngine';
+import { LivenessEngine } from '../services/LivenessEngine';
 
 interface Props {
   visible: boolean;
@@ -57,15 +59,48 @@ export const BenchmarkOverlay: React.FC<Props> = ({ visible, onClose }) => {
   const runBenchmarkTest = async () => {
     setIsRunning(true);
     setRuns([]);
-    // Simulate 5 benchmark runs using stored Benchmark data
+    // Run 5 actual model inference benchmarks
     for (let i = 0; i < 5; i++) {
-      await new Promise(r => setTimeout(r, 300));
-      const base = { detection: 12 + Math.random() * 8, liveness: 40 + Math.random() * 15, recognition: 170 + Math.random() * 30 };
+      // Benchmark face detection model (YOLOv8-face nano)
+      let detMs = 0;
+      if (FaceEngine.detectionModel) {
+        const dummyDet = new Float32Array(320 * 320 * 3);
+        const detStart = Date.now();
+        try { await FaceEngine.detectionModel.run([dummyDet]); } catch {}
+        detMs = Date.now() - detStart;
+      }
+
+      // Benchmark anti-spoof liveness model
+      let liveMs = 0;
+      if (LivenessEngine.antiSpoofModel) {
+        const dummyLive = new Float32Array(80 * 80 * 3);
+        const liveStart = Date.now();
+        try { await LivenessEngine.antiSpoofModel.run([dummyLive]); } catch {}
+        liveMs = Date.now() - liveStart;
+      }
+
+      // Benchmark face mesh model (if loaded)
+      if (LivenessEngine.faceMeshModel) {
+        const dummyMesh = new Float32Array(192 * 192 * 3);
+        const meshStart = Date.now();
+        try { await LivenessEngine.faceMeshModel.run([dummyMesh]); } catch {}
+        liveMs += Date.now() - meshStart;
+      }
+
+      // Benchmark face recognition model (AdaFace)
+      let recMs = 0;
+      if (FaceEngine.recognitionModel) {
+        const dummyRec = new Float32Array(112 * 112 * 3);
+        const recStart = Date.now();
+        try { await FaceEngine.recognitionModel.run([dummyRec]); } catch {}
+        recMs = Date.now() - recStart;
+      }
+
       const run: BenchmarkRun = {
-        detection: Math.round(base.detection),
-        liveness: Math.round(base.liveness),
-        recognition: Math.round(base.recognition),
-        total: Math.round(base.detection + base.liveness + base.recognition),
+        detection: Math.round(detMs),
+        liveness: Math.round(liveMs),
+        recognition: Math.round(recMs),
+        total: Math.round(detMs + liveMs + recMs),
       };
       setRuns(prev => [...prev, run]);
     }
@@ -195,10 +230,10 @@ export const BenchmarkOverlay: React.FC<Props> = ({ visible, onClose }) => {
           <View style={styles.modelCard}>
             <Text style={styles.sectionLabel}>MODEL STACK</Text>
             {[
-              { name: 'YOLOv8-face nano (INT8)', size: '2.1 MB', time: `${avg('detection') || '~12'}ms` },
-              { name: 'MediaPipe FaceMesh Lite', size: '4.0 MB', time: `${avg('liveness') || '~44'}ms` },
-              { name: 'AdaFace MobileOne-S0 (INT8)', size: '3.8 MB', time: `${avg('recognition') || '~185'}ms` },
-              { name: 'Anti-Spoof MobileNet (INT8)', size: '1.2 MB', time: 'passive' },
+              { name: 'YOLOv8-face nano (INT8)', size: '0.2 MB', time: `${avg('detection') || '~15'}ms` },
+              { name: 'MediaPipe FaceMesh Lite', size: '3.6 MB', time: `included in liveness` },
+              { name: 'AdaFace MobileOne-S0 (INT8)', size: '5.0 MB', time: `${avg('recognition') || '~180'}ms` },
+              { name: 'Anti-Spoof MobileNet (INT8)', size: '3.9 MB', time: `${avg('liveness') || '~45'}ms` },
             ].map(m => (
               <View key={m.name} style={styles.modelRow}>
                 <View style={{ flex: 1 }}>
@@ -210,7 +245,7 @@ export const BenchmarkOverlay: React.FC<Props> = ({ visible, onClose }) => {
             ))}
             <View style={styles.totalModelRow}>
               <Text style={styles.totalModelLabel}>Total Model Size</Text>
-              <Text style={styles.totalModelValue}>~11.1 MB ✅</Text>
+              <Text style={styles.totalModelValue}>~12.7 MB ✅</Text>
             </View>
           </View>
 

@@ -2,6 +2,7 @@
 // Core AI inference engine — AdaFace + YOLOv8-face via TFLite
 
 import { loadTensorflowModel, TensorflowModel } from 'react-native-fast-tflite';
+import { Worklets } from 'react-native-worklets-core';
 import { MODEL_CONFIG, QUALITY_CONFIG } from '../constants';
 import type {
   FaceDetection,
@@ -13,14 +14,16 @@ import type {
 } from '../types';
 
 class FaceEngineService {
-  private detectionModel: TensorflowModel | null = null;
-  private recognitionModel: TensorflowModel | null = null;
+  public detectionModel: TensorflowModel | null = null;
+  public recognitionModel: TensorflowModel | null = null;
   private isInitialized = false;
-  private storedEmbeddings: FaceEmbedding[] = [];
-  private recognitionThreshold = MODEL_CONFIG.RECOGNITION_THRESHOLD;
+
+  // Shared values to synchronize embeddings and threshold between JS and Worklet runtimes
+  public storedEmbeddings = Worklets.createSharedValue<FaceEmbedding[]>([]);
+  public recognitionThreshold = Worklets.createSharedValue<number>(MODEL_CONFIG.RECOGNITION_THRESHOLD);
 
   setThreshold(val: number) {
-    this.recognitionThreshold = val;
+    this.recognitionThreshold.value = val;
     console.log(`[FaceEngine] Recognition threshold set to: ${val}`);
   }
 
@@ -50,7 +53,7 @@ class FaceEngineService {
     }
   }
 
-  // ─── Face Detection ────────────────────────────────────────────────────────
+  // ─── Face Detection (Async version for JS context) ─────────────────────────
 
   async detectFace(
     pixelBuffer: Float32Array,
@@ -81,17 +84,50 @@ class FaceEngineService {
     );
   }
 
+  // ─── Face Detection (Sync version for Worklet context) ─────────────────────
+
+  detectFaceSync(
+    pixelBuffer: Float32Array,
+    frameWidth: number,
+    frameHeight: number
+  ): FaceDetection | null {
+    'worklet';
+    if (!FaceEngine.detectionModel) return null;
+
+    const inputSize = MODEL_CONFIG.DETECTION_INPUT_SIZE;
+
+    // Resize frame to 320x320 for YOLOv8-face nano
+    const resizedBuffer = FaceEngine.bilinearResize(
+      pixelBuffer, frameWidth, frameHeight, inputSize, inputSize
+    );
+
+    // Normalize to [0, 1]
+    const normalizedInput = new Float32Array(inputSize * inputSize * 3);
+    for (let i = 0; i < normalizedInput.length; i++) {
+      normalizedInput[i] = resizedBuffer[i] / 255.0;
+    }
+
+    // Run inference synchronously inside worklet
+    const outputs = FaceEngine.detectionModel.runSync([normalizedInput]);
+    const detections = outputs[0] as Float32Array;
+
+    return FaceEngine.parseYOLOFaceOutput(
+      detections, frameWidth, frameHeight, inputSize
+    );
+  }
+
   private parseYOLOFaceOutput(
     output: Float32Array,
     origW: number,
     origH: number,
     inputSize: number
   ): FaceDetection | null {
+    'worklet';
     // output shape: [20, 8400] transposed → we iterate predictions
     // Each col: [cx, cy, w, h, conf, lm0x, lm0y, lm1x, lm1y, ... lm4x, lm4y]
     const numPredictions = 8400;
-    const numAttrs = 20; // 4 bbox + 1 conf + 5 landmarks * 2
-    let bestConf = MODEL_CONFIG.DETECTION_CONFIDENCE_THRESHOLD;
+    const bestConfThreshold = MODEL_CONFIG.DETECTION_CONFIDENCE_THRESHOLD;
+    let bestConf = bestConfThreshold;
     let bestFace: FaceDetection | null = null;
 
     const scaleX = origW / inputSize;
@@ -148,6 +184,7 @@ class FaceEngineService {
     frameWidth: number,
     frameHeight: number
   ): QualityResult {
+    'worklet';
     // 1. Size check
     const faceSize = Math.min(face.width, face.height);
     if (faceSize < QUALITY_CONFIG.MIN_FACE_SIZE_PX) {
@@ -171,7 +208,7 @@ class FaceEngineService {
     const roiY = Math.max(0, Math.floor(face.y));
     const roiW = Math.min(frameWidth - roiX, Math.ceil(face.width));
     const roiH = Math.min(frameHeight - roiY, Math.ceil(face.height));
-    const roi = this.extractROI(pixelBuffer, face, frameWidth, frameHeight);
+    const roi = FaceEngine.extractROI(pixelBuffer, face, frameWidth, frameHeight);
 
     // 4. Brightness check (mean pixel value)
     const brightness = roi.reduce((a, b) => a + b, 0) / roi.length;
@@ -185,7 +222,7 @@ class FaceEngineService {
     }
 
     // 5. Blur check — Laplacian variance (using integer bounds roiW and roiH)
-    const blur = this.laplacianVariance(roi, roiW, roiH);
+    const blur = FaceEngine.laplacianVariance(roi, roiW, roiH);
     if (blur < QUALITY_CONFIG.MIN_BLUR_SCORE) {
       return { pass: false, score: 0.5, reason: 'Image too blurry — hold still',
                blur, brightness, faceSize };
@@ -200,6 +237,7 @@ class FaceEngineService {
 
   // Laplacian variance for blur detection
   private laplacianVariance(pixels: Float32Array, width: number, height: number): number {
+    'worklet';
     const kernel = [0, 1, 0, 1, -4, 1, 0, 1, 0];
     let sum = 0, sumSq = 0;
     const n = (width - 2) * (height - 2);
@@ -225,7 +263,7 @@ class FaceEngineService {
     return sumSq / n - mean * mean; // variance
   }
 
-  // ─── Face Recognition ──────────────────────────────────────────────────────
+  // ─── Face Recognition (Async version for JS context) ──────────────────────
 
   async extractEmbedding(
     pixelBuffer: Float32Array,
@@ -258,7 +296,7 @@ class FaceEngineService {
   ): Promise<RecognitionResult> {
     const startTime = Date.now();
 
-    if (this.storedEmbeddings.length === 0) {
+    if (this.storedEmbeddings.value.length === 0) {
       return { matched: false, confidence: 0, processingTimeMs: Date.now() - startTime };
     }
 
@@ -267,7 +305,7 @@ class FaceEngineService {
     let bestMatch: FaceEmbedding | null = null;
     let bestScore = -1;
 
-    for (const stored of this.storedEmbeddings) {
+    for (const stored of this.storedEmbeddings.value) {
       const similarity = this.cosineSimilarity(queryEmbedding, stored.embedding);
       if (similarity > bestScore) {
         bestScore = similarity;
@@ -277,7 +315,114 @@ class FaceEngineService {
 
     const processingTimeMs = Date.now() - startTime;
 
-    if (bestScore >= this.recognitionThreshold && bestMatch) {
+    if (bestScore >= this.recognitionThreshold.value && bestMatch) {
+      return {
+        matched: true,
+        userId: bestMatch.userId,
+        userName: bestMatch.userName,
+        employeeId: bestMatch.employeeId,
+        confidence: bestScore,
+        processingTimeMs,
+      };
+    }
+
+    return { matched: false, confidence: bestScore, processingTimeMs };
+  }
+
+  // ─── Face Recognition (Sync version for Worklet context) ──────────────────
+
+  extractEmbeddingSync(
+    pixelBuffer: Float32Array,
+    face: FaceDetection,
+    frameWidth: number
+  ): number[] {
+    'worklet';
+    if (!FaceEngine.recognitionModel) return [];
+
+    // 1. Align face using 5-point landmarks (similarity transform)
+    const aligned = FaceEngine.alignFace(pixelBuffer, face, frameWidth);
+
+    // 2. Normalize to [-1, 1] for AdaFace
+    const normalized = new Float32Array(112 * 112 * 3);
+    for (let i = 0; i < 112 * 112 * 3; i++) {
+      normalized[i] = (aligned[i] / 127.5) - 1.0;
+    }
+
+    // 3. Run AdaFace inference synchronously
+    const outputs = FaceEngine.recognitionModel.runSync([normalized]);
+    const rawEmbedding = Array.from(outputs[0] as Float32Array);
+
+    // 4. L2 normalize embedding
+    return FaceEngine.l2Normalize(rawEmbedding);
+  }
+
+  recognizeFaceSync(
+    pixelBuffer: Float32Array,
+    face: FaceDetection,
+    frameWidth: number
+  ): RecognitionResult {
+    'worklet';
+    const startTime = Date.now();
+
+    if (FaceEngine.storedEmbeddings.value.length === 0) {
+      return { matched: false, confidence: 0, processingTimeMs: Date.now() - startTime };
+    }
+
+    const queryEmbedding = FaceEngine.extractEmbeddingSync(pixelBuffer, face, frameWidth);
+    if (queryEmbedding.length === 0) {
+      return { matched: false, confidence: 0, processingTimeMs: Date.now() - startTime };
+    }
+
+    let bestMatch: FaceEmbedding | null = null;
+    let bestScore = -1;
+
+    for (const stored of FaceEngine.storedEmbeddings.value) {
+      const similarity = FaceEngine.cosineSimilarity(queryEmbedding, stored.embedding);
+      if (similarity > bestScore) {
+        bestScore = similarity;
+        bestMatch = stored;
+      }
+    }
+
+    const processingTimeMs = Date.now() - startTime;
+
+    if (bestScore >= FaceEngine.recognitionThreshold.value && bestMatch) {
+      return {
+        matched: true,
+        userId: bestMatch.userId,
+        userName: bestMatch.userName,
+        employeeId: bestMatch.employeeId,
+        confidence: bestScore,
+        processingTimeMs,
+      };
+    }
+
+    return { matched: false, confidence: bestScore, processingTimeMs };
+  }
+
+  // ─── Match pre-computed embedding against stored (JS thread) ────────────
+
+  matchEmbedding(queryEmbedding: number[]): RecognitionResult {
+    const startTime = Date.now();
+
+    if (this.storedEmbeddings.value.length === 0) {
+      return { matched: false, confidence: 0, processingTimeMs: Date.now() - startTime };
+    }
+
+    let bestMatch: FaceEmbedding | null = null;
+    let bestScore = -1;
+
+    for (const stored of this.storedEmbeddings.value) {
+      const similarity = this.cosineSimilarity(queryEmbedding, stored.embedding);
+      if (similarity > bestScore) {
+        bestScore = similarity;
+        bestMatch = stored;
+      }
+    }
+
+    const processingTimeMs = Date.now() - startTime;
+
+    if (bestScore >= this.recognitionThreshold.value && bestMatch) {
       return {
         matched: true,
         userId: bestMatch.userId,
@@ -294,6 +439,7 @@ class FaceEngineService {
   // ─── Math Utilities ────────────────────────────────────────────────────────
 
   private cosineSimilarity(a: number[], b: number[]): number {
+    'worklet';
     let dot = 0;
     for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
     // Vectors are already L2-normalized, so dot product = cosine similarity
@@ -301,6 +447,7 @@ class FaceEngineService {
   }
 
   private l2Normalize(v: number[]): number[] {
+    'worklet';
     const norm = Math.sqrt(v.reduce((sum, x) => sum + x * x, 0));
     return v.map(x => x / (norm + 1e-10));
   }
@@ -311,6 +458,7 @@ class FaceEngineService {
     face: FaceDetection,
     frameWidth: number
   ): Float32Array {
+    'worklet';
     const frameHeight = pixels.length / (frameWidth * 3);
     // Standard aligned face coordinates for 112x112 (ArcFace standard)
     const refPoints = [
@@ -326,7 +474,7 @@ class FaceEngineService {
     ];
 
     // Estimate similarity transform (scale + rotation + translation)
-    const { scale, angle, tx, ty } = this.estimateSimilarityTransform(srcPoints, refPoints);
+    const { scale, angle, tx, ty } = FaceEngine.estimateSimilarityTransform(srcPoints, refPoints);
 
     // Apply transform and sample 112x112 crop
     const output = new Float32Array(112 * 112 * 3);
@@ -355,6 +503,7 @@ class FaceEngineService {
   }
 
   private estimateSimilarityTransform(src: Point[], dst: Point[]) {
+    'worklet';
     // Mean-centered similarity transform estimation
     const srcMean = { x: src.reduce((s, p) => s + p.x, 0) / src.length,
                       y: src.reduce((s, p) => s + p.y, 0) / src.length };
@@ -386,6 +535,7 @@ class FaceEngineService {
     src: Float32Array, srcW: number, srcH: number,
     dstW: number, dstH: number
   ): Float32Array {
+    'worklet';
     const dst = new Float32Array(dstW * dstH * 3);
     const scaleX = srcW / dstW, scaleY = srcH / dstH;
 
@@ -414,6 +564,7 @@ class FaceEngineService {
     frameWidth: number,
     frameHeight: number
   ): Float32Array {
+    'worklet';
     const x = Math.max(0, Math.floor(face.x));
     const y = Math.max(0, Math.floor(face.y));
     const w = Math.min(frameWidth - x, Math.ceil(face.width));
@@ -435,20 +586,20 @@ class FaceEngineService {
   // ─── Embedding Management ──────────────────────────────────────────────────
 
   loadEmbeddings(embeddings: FaceEmbedding[]): void {
-    this.storedEmbeddings = embeddings;
+    this.storedEmbeddings.value = embeddings;
     console.log(`[FaceEngine] Loaded ${embeddings.length} face embeddings`);
   }
 
   addEmbedding(embedding: FaceEmbedding): void {
     // Remove existing enrollment for same user if any
-    this.storedEmbeddings = this.storedEmbeddings.filter(
-      e => e.userId !== embedding.userId
-    );
-    this.storedEmbeddings.push(embedding);
+    this.storedEmbeddings.value = [
+      ...this.storedEmbeddings.value.filter(e => e.userId !== embedding.userId),
+      embedding
+    ];
   }
 
   getEmbeddingCount(): number {
-    return this.storedEmbeddings.length;
+    return this.storedEmbeddings.value.length;
   }
 
   destroy(): void {

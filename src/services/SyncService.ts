@@ -4,6 +4,7 @@
 // Sync will use fetch() when online — no external cloud SDK required
 
 import DeviceInfo from 'react-native-device-info';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { DatabaseService } from './DatabaseService';
 import type { SyncStatus, AttendanceRecord } from '../types';
 
@@ -75,23 +76,54 @@ class SyncServiceClass {
       for (const chunk of chunks) {
         const payload = this.buildSyncPayload(chunk);
 
-        // TODO: Replace with your actual API endpoint
-        // For hackathon demo, we mark as synced when online
-        // In production, POST to your Datalake 3.0 API endpoint:
-        // const response = await fetch('https://your-api.com/attendance', {
-        //   method: 'POST',
-        //   headers: { 'Content-Type': 'application/json' },
-        //   body: JSON.stringify(payload),
-        // });
+        // POST to Datalake 3.0 sync endpoint
+        const endpoint = await this.getSyncEndpoint();
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Device-ID': this.deviceId,
+            'X-App-Version': '1.0.0',
+            'X-Schema-Version': '1.0',
+          },
+          body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) {
+          throw new Error(`Sync failed: HTTP ${response.status} ${response.statusText}`);
+        }
+
+        // Server acknowledged the batch
+        try {
+          const responseData = await response.json();
+          console.log(`[SyncService] ✅ Server acknowledged: ${responseData.acknowledged ?? chunk.length} records`);
+        } catch {
+          // Response may not be JSON — that's OK as long as status was 2xx
+          console.log(`[SyncService] ✅ Server accepted batch: ${chunk.length} records`);
+        }
 
         syncedIds.push(...chunk.map(r => r.id));
-        console.log(`[SyncService] ✅ Chunk ready: ${chunk.length} records`);
+        console.log(`[SyncService] ✅ Chunk synced: ${chunk.length} records`);
       }
 
       // Mark as synced in DB
       if (syncedIds.length > 0) {
         await DatabaseService.markSynced(syncedIds);
         console.log(`[SyncService] ✅ Marked ${syncedIds.length} records as synced`);
+
+        // Auto-purge if setting is enabled
+        try {
+          const rawSettings = await AsyncStorage.getItem('@prahari_settings');
+          if (rawSettings) {
+            const settings = JSON.parse(rawSettings);
+            if (settings.autoPurgeAfterSync) {
+              await DatabaseService.purgeSyncedRecords();
+              console.log('[SyncService] ✅ Auto-purged synced records');
+            }
+          }
+        } catch (purgeError) {
+          console.error('[SyncService] Auto-purge failed:', purgeError);
+        }
       }
 
     } catch (error) {
@@ -123,6 +155,17 @@ class SyncServiceClass {
         imageHash: r.imageHash, // SHA-256 only — no raw image ever leaves device
       })),
     };
+  }
+
+  private async getSyncEndpoint(): Promise<string> {
+    try {
+      const customEndpoint = await AsyncStorage.getItem('@prahari_sync_endpoint');
+      if (customEndpoint && customEndpoint.trim().length > 0) {
+        return customEndpoint.trim();
+      }
+    } catch {}
+    // Default Datalake 3.0 endpoint (configure in Settings)
+    return 'https://datalake-api.execute-api.ap-south-1.amazonaws.com/prod/attendance/sync';
   }
 
   // ─── Manual Trigger ───────────────────────────────────────────────────────

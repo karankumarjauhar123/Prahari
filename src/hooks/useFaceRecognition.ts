@@ -1,8 +1,9 @@
 // src/hooks/useFaceRecognition.ts
 // Master hook — orchestrates detection → quality → liveness → recognition
+// All model inference now runs in the worklet thread; only lightweight
+// results (primitives/plain objects) cross to JS via createRunOnJS.
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import DeviceInfo from 'react-native-device-info';
 import AesCrypto from 'react-native-aes-crypto';
 import { v4 as uuid } from 'uuid';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -20,6 +21,21 @@ type AuthState =
   | 'LIVENESS_PASSIVE' | 'LIVENESS_ACTIVE' | 'RECOGNIZING'
   | 'SUCCESS' | 'FAILED' | 'SPOOF_DETECTED';
 
+/** Lightweight result object — NO ArrayBuffer, only serializable types. */
+export interface FrameResult {
+  hasFace: boolean;
+  face: { x: number; y: number; width: number; height: number; confidence: number } | null;
+  qualityScore: number;
+  qualityPass: boolean;
+  qualityReason: string | null;
+  passiveScore: number;
+  embedding: number[] | null;
+  // Active liveness challenge results (from worklet)
+  challengeCompleted: boolean;
+  challengeTimedOut: boolean;
+  currentChallenge: string | null;
+}
+
 interface Props {
   onStateChange: (state: AuthState) => void;
   onChallengeChange: (challenge: LivenessChallenge | null) => void;
@@ -31,6 +47,7 @@ interface Props {
 
 export const useFaceRecognition = (props: Props) => {
   const [isReady, setIsReady] = useState(false);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const stateRef = useRef<AuthState>('INITIALIZING');
   const isProcessingRef = useRef(false);
   const passiveScoreRef = useRef(0);
@@ -38,10 +55,10 @@ export const useFaceRecognition = (props: Props) => {
   const frameCountRef = useRef(0);
   const resetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const updateState = (newState: AuthState) => {
+  const updateState = useCallback((newState: AuthState) => {
     stateRef.current = newState;
     props.onStateChange(newState);
-  };
+  }, [props.onStateChange]);
 
   // ─── Initialize engines ───────────────────────────────────────────────────
 
@@ -49,48 +66,70 @@ export const useFaceRecognition = (props: Props) => {
     const init = async () => {
       try {
         await FaceEngine.initialize();
+        console.log('[useFaceRecognition] FaceEngine initialized');
+      } catch (err) {
+        console.error('[useFaceRecognition] FaceEngine init failed:', err);
+      }
+
+      try {
         await LivenessEngine.initialize();
+        console.log('[useFaceRecognition] LivenessEngine initialized');
+      } catch (err) {
+        console.error('[useFaceRecognition] LivenessEngine init failed:', err);
+      }
 
-        // Load settings from AsyncStorage and apply to engines
-        try {
-          const rawSettings = await AsyncStorage.getItem('@prahari_settings');
-          if (rawSettings) {
-            const settings = JSON.parse(rawSettings);
-            if (typeof settings.recognitionThreshold === 'number') {
-              FaceEngine.setThreshold(settings.recognitionThreshold);
-            }
-            if (typeof settings.challengeCount === 'number') {
-              LivenessEngine.setChallengeCount(settings.challengeCount);
-            }
+      // Load settings from AsyncStorage and apply to engines
+      try {
+        const rawSettings = await AsyncStorage.getItem('@prahari_settings');
+        if (rawSettings) {
+          const settings = JSON.parse(rawSettings);
+          if (typeof settings.recognitionThreshold === 'number') {
+            FaceEngine.setThreshold(settings.recognitionThreshold);
           }
-        } catch (settingsErr) {
-          console.error('[useFaceRecognition] Settings load failed:', settingsErr);
+          if (typeof settings.challengeCount === 'number') {
+            LivenessEngine.setChallengeCount(settings.challengeCount);
+          }
+          // Wire liveness strict mode — requires higher passive score threshold
+          if (typeof settings.livenessStrict === 'boolean') {
+            LivenessEngine.setStrictMode(settings.livenessStrict);
+          }
+          // Wire passive liveness toggle
+          if (typeof settings.requirePassiveLiveness === 'boolean') {
+            LivenessEngine.setPassiveLivenessEnabled(settings.requirePassiveLiveness);
+          }
         }
+      } catch (settingsErr) {
+        console.error('[useFaceRecognition] Settings load failed:', settingsErr);
+      }
 
-        // Load enrolled embeddings from encrypted DB
+      // Load enrolled embeddings from encrypted DB
+      try {
         const embeddings = await DatabaseService.getAllEmbeddings();
         FaceEngine.loadEmbeddings(embeddings);
-
-        setIsReady(true);
-        updateState('WAITING_FACE');
-      } catch (err) {
-        console.error('[useFaceRecognition] Init failed:', err);
-        props.onFailed('Failed to initialize. Please restart the app.');
+        console.log('[useFaceRecognition] Loaded', embeddings.length, 'embeddings');
+      } catch (dbErr) {
+        console.error('[useFaceRecognition] DB load failed:', dbErr);
       }
+
+      setModelsLoaded(true);
+      setIsReady(true);
+      updateState('WAITING_FACE');
+      console.log('[useFaceRecognition] Ready — state set to WAITING_FACE');
     };
     init();
 
-    // Cleanup timeouts on unmount
+    // Cleanup on unmount
     return () => {
       if (resetTimeoutRef.current) {
         clearTimeout(resetTimeoutRef.current);
       }
+      LivenessEngine.activeLivenessActive.value = false;
     };
   }, []);
 
-  // ─── Main frame processor callback ───────────────────────────────────────
+  // ─── Handle worklet results on JS thread ──────────────────────────────────
 
-  const processFrame = useCallback(async (buffer: ArrayBuffer, width: number, height: number) => {
+  const handleFrameResult = useCallback(async (result: FrameResult) => {
     if (!isReady || isProcessingRef.current) return;
     if (stateRef.current === 'SUCCESS' || stateRef.current === 'FAILED' || stateRef.current === 'SPOOF_DETECTED') return;
 
@@ -98,25 +137,17 @@ export const useFaceRecognition = (props: Props) => {
     frameCountRef.current++;
 
     try {
-      // Convert camera frame buffer to Float32Array RGB
-      const uint8 = new Uint8Array(buffer);
-      const pixels = new Float32Array(uint8.length);
-      for (let i = 0; i < uint8.length; i++) {
-        pixels[i] = uint8[i];
-      }
-
       // ── Step 1: Face Detection ──
-      const face = await FaceEngine.detectFace(pixels, width, height);
-
-      if (!face) {
+      if (!result.hasFace || !result.face) {
         props.onFaceDetected(null);
         if (stateRef.current !== 'WAITING_FACE') {
           updateState('WAITING_FACE');
-          LivenessEngine.resetOpticalFlow();
         }
         return;
       }
 
+      // Reconstruct face detection object for UI callbacks
+      const face = result.face as FaceDetection;
       props.onFaceDetected(face);
 
       // ── Step 2: Quality Check ──
@@ -124,32 +155,29 @@ export const useFaceRecognition = (props: Props) => {
         updateState('QUALITY_CHECK');
       }
 
-      const quality = FaceEngine.checkFaceQuality(pixels, face, width, height);
-      props.onQualityUpdate(quality.score);
+      props.onQualityUpdate(result.qualityScore);
 
-      if (!quality.pass) {
-        props.onFailed(quality.reason ?? 'Adjust position');
+      if (!result.qualityPass) {
+        props.onFailed(result.qualityReason ?? 'Adjust position');
         updateState('WAITING_FACE');
         return;
       }
 
-      // ── Step 3: Passive Liveness (runs continuously in background) ──
+      // ── Step 3: Passive Liveness ──
       if (stateRef.current === 'QUALITY_CHECK') {
         updateState('LIVENESS_PASSIVE');
       }
 
-      // Run passive every 3rd frame for performance
-      if (frameCountRef.current % 3 === 0) {
-        passiveScoreRef.current = await LivenessEngine.runPassiveLiveness(
-          pixels, face, width, height
-        );
+      // Use passive score from worklet (anti-spoof model already ran there)
+      if (result.passiveScore > 0) {
+        passiveScoreRef.current = result.passiveScore;
       }
 
       // Spoof detected — halt immediately
-      if (passiveScoreRef.current < 0.35) {
+      if (passiveScoreRef.current > 0 && passiveScoreRef.current < 0.35) {
+        LivenessEngine.activeLivenessActive.value = false;
         updateState('SPOOF_DETECTED');
         props.onFailed('Spoof attempt detected');
-        // Auto-reset after 3 seconds so user can try again
         resetTimeoutRef.current = setTimeout(() => {
           updateState('WAITING_FACE');
           activeCompleteRef.current = false;
@@ -162,54 +190,71 @@ export const useFaceRecognition = (props: Props) => {
       // ── Step 4: Active Liveness Challenge ──
       if (stateRef.current === 'LIVENESS_PASSIVE' && passiveScoreRef.current > 0.55) {
         updateState('LIVENESS_ACTIVE');
-        // Start randomized challenge sequence
+        // Signal worklet to start running challenge checks
+        LivenessEngine.activeLivenessActive.value = true;
         const challenges = LivenessEngine.startChallenge(Date.now() % 9999);
         props.onChallengeChange(challenges[0]);
       }
 
       if (stateRef.current === 'LIVENESS_ACTIVE' && !activeCompleteRef.current) {
-        const result = await LivenessEngine.checkChallenge(pixels, face, width, height);
-
-        if (result.timedOut) {
-          updateState('WAITING_FACE');
-          activeCompleteRef.current = false;
-          props.onChallengeChange(null);
+        // Process challenge results from worklet frame processor
+        if (result.challengeTimedOut) {
+          // Challenge timed out — fail and reset
+          LivenessEngine.activeLivenessActive.value = false;
+          updateState('FAILED');
+          props.onFailed('Liveness challenge timed out — try again');
+          resetTimeoutRef.current = setTimeout(() => {
+            updateState('WAITING_FACE');
+            activeCompleteRef.current = false;
+            passiveScoreRef.current = 0;
+            props.onChallengeChange(null);
+          }, 2000);
           return;
         }
 
-        props.onChallengeChange(result.currentChallenge);
-
-        if (result.completed) {
+        if (result.challengeCompleted) {
+          // All challenges passed!
+          LivenessEngine.activeLivenessActive.value = false;
           activeCompleteRef.current = true;
           updateState('RECOGNIZING');
+        } else {
+          // Update UI with current challenge
+          if (result.currentChallenge) {
+            props.onChallengeChange(result.currentChallenge as any);
+          }
+          return; // Still waiting for challenge completion
         }
-        return; // Keep processing challenges
       }
 
       // ── Step 5: Face Recognition ──
-      if (stateRef.current === 'RECOGNIZING') {
-        const result = await FaceEngine.recognizeFace(pixels, face, width);
+      if (stateRef.current === 'RECOGNIZING' && result.embedding) {
+        // Match embedding against enrolled faces (JS thread, no ArrayBuffer)
+        const matchResult = FaceEngine.matchEmbedding(result.embedding);
 
-        if (result.matched && result.userId && result.userName) {
-          // Save attendance record
+        if (matchResult.matched && matchResult.userId && matchResult.userName) {
+          // Compute image hash from embedding values (no pixel data needed)
+          const sampleHex = result.embedding.slice(0, 50)
+            .map(v => Math.round(Math.abs(v) * 255).toString(16).padStart(2, '0'))
+            .join('');
+          const imageHash = await AesCrypto.sha256(sampleHex);
+
           const record: AttendanceRecord = {
             id: uuid(),
-            userId: result.userId,
-            userName: result.userName,
-            employeeId: result.employeeId ?? '',
+            userId: matchResult.userId,
+            userName: matchResult.userName,
+            employeeId: matchResult.employeeId ?? '',
             timestamp: Date.now(),
-            confidence: result.confidence,
+            confidence: matchResult.confidence,
             livenessScore: passiveScoreRef.current,
             synced: false,
-            imageHash: await computeImageHash(pixels),
+            imageHash,
           };
 
           await DatabaseService.saveAttendance(record);
 
           updateState('SUCCESS');
-          props.onSuccess(result.userName, result.confidence);
+          props.onSuccess(matchResult.userName, matchResult.confidence);
 
-          // Reset for next auth after 3 seconds
           resetTimeoutRef.current = setTimeout(() => {
             updateState('WAITING_FACE');
             activeCompleteRef.current = false;
@@ -219,7 +264,6 @@ export const useFaceRecognition = (props: Props) => {
         } else {
           updateState('FAILED');
           props.onFailed('Face not recognized');
-          // Reset after 2 seconds
           resetTimeoutRef.current = setTimeout(() => {
             updateState('WAITING_FACE');
             activeCompleteRef.current = false;
@@ -229,7 +273,7 @@ export const useFaceRecognition = (props: Props) => {
       }
 
     } catch (error) {
-      console.error('[useFaceRecognition] Frame error:', error);
+      console.error('[useFaceRecognition] Frame result error:', error);
     } finally {
       isProcessingRef.current = false;
     }
@@ -238,19 +282,13 @@ export const useFaceRecognition = (props: Props) => {
   // ─── Enrollment trigger ───────────────────────────────────────────────────
 
   const startEnrollment = useCallback(() => {
-    // Navigate to enroll screen — handled by navigation
     props.onStateChange('WAITING_FACE');
   }, []);
 
-  return { isReady, processFrame, startEnrollment };
+  return {
+    isReady,
+    modelsLoaded,
+    handleFrameResult,
+    startEnrollment,
+  };
 };
-
-// ─── Utilities ────────────────────────────────────────────────────────────────
-
-async function computeImageHash(pixels: Float32Array): Promise<string> {
-  // SHA-256 of raw pixel data — no image stored, only cryptographic hash
-  const sample = Array.from(pixels.slice(0, 1000))
-    .map(v => Math.round(v).toString(16).padStart(2, '0'))
-    .join('');
-  return AesCrypto.sha256(sample);
-}

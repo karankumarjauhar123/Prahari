@@ -18,7 +18,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle, Path, Rect } from 'react-native-svg';
 import { FaceEngine } from '../services/FaceEngine';
 import { DatabaseService } from '../services/DatabaseService';
-import { UI_COLORS } from '../constants';
+import { UI_COLORS, MODEL_CONFIG, QUALITY_CONFIG } from '../constants';
+import {
+  wDetectFace, wCheckFaceQuality, wExtractEmbedding,
+} from '../utils/faceWorklets';
 import type { FaceEmbedding } from '../types';
 
 const CAPTURE_COUNT = 5; // Capture 5 embeddings and average for robustness
@@ -275,6 +278,7 @@ export const EnrollScreen: React.FC = () => {
     step: 'FORM', capturedCount: 0, embeddings: [],
   });
   const [isCameraLoaded, setIsCameraLoaded] = useState(false);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const isCapturingRef = useRef(false);
   const capturedEmbeddingsRef = useRef<number[][]>([]);
   const stepRef = useRef<EnrollState['step']>('FORM');
@@ -284,6 +288,7 @@ export const EnrollScreen: React.FC = () => {
     const init = async () => {
       try {
         await FaceEngine.initialize();
+        setModelsLoaded(true);
       } catch (err) {
         console.error('[EnrollScreen] FaceEngine initialize error:', err);
       }
@@ -379,59 +384,70 @@ export const EnrollScreen: React.FC = () => {
     }).start();
   };
 
-  // ─── Capture Logic (unchanged) ──────────────────────────────────────────
+  // ─── Capture Logic (sync worklet – no ArrayBuffer crosses to JS) ────────
 
-  const handleCaptureFrameData = useCallback(async (buffer: ArrayBuffer, width: number, height: number) => {
-    if (isCapturingRef.current) return;
+  const handleEmbeddingResult = useCallback((embedding: number[]) => {
     if (capturedEmbeddingsRef.current.length >= CAPTURE_COUNT) return;
-    isCapturingRef.current = true;
+    capturedEmbeddingsRef.current.push(embedding);
 
-    try {
-      const pixels = new Float32Array(new Uint8Array(buffer));
+    setState(prev => {
+      const next = {
+        ...prev,
+        capturedCount: capturedEmbeddingsRef.current.length,
+      };
+      stepRef.current = next.step;
+      return next;
+    });
 
-      const face = await FaceEngine.detectFace(pixels, width, height);
-      if (!face) { isCapturingRef.current = false; return; }
-
-      const quality = FaceEngine.checkFaceQuality(pixels, face, width, height);
-      if (!quality.pass) { isCapturingRef.current = false; return; }
-
-      const embedding = await FaceEngine.extractEmbedding(pixels, face, width);
-      capturedEmbeddingsRef.current.push(embedding);
-
-      setState(prev => {
-        const next = {
-          ...prev,
-          capturedCount: capturedEmbeddingsRef.current.length,
-        };
-        stepRef.current = next.step;
-        return next;
-      });
-
-      if (capturedEmbeddingsRef.current.length >= CAPTURE_COUNT) {
-        await finalizeEnrollment(capturedEmbeddingsRef.current);
-      }
-    } catch (e) {
-      console.error('[Enroll] Capture error:', e);
-    } finally {
-      // Delay between captures for diversity
-      setTimeout(() => { isCapturingRef.current = false; }, 800);
+    if (capturedEmbeddingsRef.current.length >= CAPTURE_COUNT) {
+      finalizeEnrollment(capturedEmbeddingsRef.current);
     }
   }, [name, employeeId]);
 
-  const handleCaptureFrameDataOnJS = Worklets.createRunOnJS(handleCaptureFrameData);
+  const handleEmbeddingOnJS = Worklets.createRunOnJS(handleEmbeddingResult);
+
+  // Get model references (JSI host objects — safe to capture in worklet closure)
+  const detModel = modelsLoaded ? FaceEngine.detectionModel : null;
+  const recModel = modelsLoaded ? FaceEngine.recognitionModel : null;
 
   const frameProcessor = useFrameProcessor((frame) => {
     'worklet';
-    // NOTE: Use stepRef instead of state.step — worklets run on a separate thread
-    // and cannot access React state directly
+    if (!detModel || !recModel) return;
     runAtTargetFps(2, () => {
       'worklet';
-      const width = frame.width;
-      const height = frame.height;
-      const buffer = frame.toArrayBuffer();
-      handleCaptureFrameDataOnJS(buffer, width, height);
+      try {
+        const width = frame.width;
+        const height = frame.height;
+        const buffer = frame.toArrayBuffer();
+        const pixels = new Float32Array(new Uint8Array(buffer));
+
+        // Step 1: Detect face (synchronous — runs in worklet thread)
+        const face = wDetectFace(pixels, width, height, detModel);
+        if (!face) {
+          console.log('[EnrollFP] No face detected in frame ' + width + 'x' + height);
+          return;
+        }
+        console.log('[EnrollFP] Face detected: conf=' + face.confidence.toFixed(2) + ' size=' + Math.min(face.width, face.height).toFixed(0));
+
+        // Step 2: Quality check (synchronous)
+        const quality = wCheckFaceQuality(pixels, face, width, height);
+        if (!quality.pass) {
+          console.log('[EnrollFP] Quality failed: ' + (quality.reason || 'unknown') + ' score=' + quality.score);
+          return;
+        }
+        console.log('[EnrollFP] Quality passed, extracting embedding...');
+
+        // Step 3: Extract embedding (synchronous)
+        const embedding = wExtractEmbedding(pixels, face, width, recModel);
+        console.log('[EnrollFP] Embedding extracted, length=' + embedding.length);
+
+        // Only a number[] crosses to JS — fully supported as shared value
+        handleEmbeddingOnJS(embedding);
+      } catch (e: any) {
+        console.error('[EnrollFP] Frame processing error:', e?.message || e);
+      }
     });
-  }, [handleCaptureFrameDataOnJS]);
+  }, [detModel, recModel, handleEmbeddingOnJS]);
 
   const finalizeEnrollment = async (embeddings: number[][]) => {
     setState(prev => {
@@ -485,9 +501,17 @@ export const EnrollScreen: React.FC = () => {
     
     // Check and request camera permission dynamically
     if (!hasPermission) {
-      const granted = await requestPermission();
-      if (!granted) {
-        Alert.alert('Permission Denied', 'Camera permission is required to enroll a user.');
+      try {
+        const granted = await requestPermission();
+        if (!granted) {
+          Alert.alert('Permission Denied', 'Camera permission is required to enroll a user. Please grant it in Settings.');
+          return;
+        }
+        // Small delay to let the permission state propagate through the system
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } catch (err) {
+        console.error('[EnrollScreen] Permission request error:', err);
+        Alert.alert('Error', 'Could not request camera permission.');
         return;
       }
     }
@@ -609,7 +633,7 @@ export const EnrollScreen: React.FC = () => {
     const progress = state.capturedCount / CAPTURE_COUNT;
     const scanLineTranslate = scanLineAnim.interpolate({
       inputRange: [0, 1],
-      outputRange: [-120, 120],
+      outputRange: [-130, 130],
     });
 
     const onCancel = () => {
@@ -627,6 +651,7 @@ export const EnrollScreen: React.FC = () => {
           frameProcessor={frameProcessor}
           onCancel={onCancel}
           onCameraLoaded={setIsCameraLoaded}
+          hasPermission={hasPermission}
         />
 
         {/* Dark overlay - only display when camera is loaded */}
@@ -664,7 +689,7 @@ export const EnrollScreen: React.FC = () => {
                   { transform: [{ scale: pulseAnim }] },
                 ]}
               >
-                <ProgressRing progress={progress} size={200} strokeWidth={5} />
+                <ProgressRing progress={progress} size={280} strokeWidth={6} />
 
                 {/* Scan line overlay */}
                 {state.step === 'CAPTURE' && (
@@ -1036,14 +1061,14 @@ const styles = StyleSheet.create({
     marginBottom: 32,
   },
   faceGuideOuter: {
-    width: 200,
-    height: 200,
+    width: 280,
+    height: 280,
     alignItems: 'center',
     justifyContent: 'center',
   },
   scanLine: {
     position: 'absolute',
-    width: 160,
+    width: 220,
     height: 2,
     backgroundColor: UI_COLORS.ACCENT,
     opacity: 0.4,
@@ -1290,29 +1315,38 @@ const EnrollCameraFeed: React.FC<{
   frameProcessor: any;
   onCancel: () => void;
   onCameraLoaded: (loaded: boolean) => void;
-}> = ({ isActive, frameProcessor, onCancel, onCameraLoaded }) => {
+  hasPermission: boolean;
+}> = ({ isActive, frameProcessor, onCancel, onCameraLoaded, hasPermission }) => {
   const device = useCameraDevice('front');
   const [timedOut, setTimedOut] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!device) {
+    if (!device || !hasPermission) {
       onCameraLoaded(false);
       const timer = setTimeout(() => setTimedOut(true), 5000);
       return () => clearTimeout(timer);
     } else {
       setTimedOut(false);
+      setCameraError(null);
       onCameraLoaded(true);
     }
-  }, [device, onCameraLoaded]);
+  }, [device, hasPermission, onCameraLoaded]);
 
-  if (!device) {
+  if (!hasPermission || !device) {
     return (
       <View style={[StyleSheet.absoluteFill, { backgroundColor: UI_COLORS.BACKGROUND, alignItems: 'center', justifyContent: 'center' }]}>
         {timedOut ? (
           <>
             <Text style={{ fontSize: 48, marginBottom: 16 }}>📷</Text>
-            <Text style={{ color: UI_COLORS.TEXT_PRIMARY, fontSize: 16, fontWeight: '700' }}>No front camera found</Text>
-            <Text style={{ color: UI_COLORS.TEXT_SECONDARY, fontSize: 13, marginTop: 6, marginBottom: 20, textAlign: 'center', paddingHorizontal: 32 }}>Please check your camera settings and try again.</Text>
+            <Text style={{ color: UI_COLORS.TEXT_PRIMARY, fontSize: 16, fontWeight: '700' }}>
+              {!hasPermission ? 'Camera permission required' : 'No front camera found'}
+            </Text>
+            <Text style={{ color: UI_COLORS.TEXT_SECONDARY, fontSize: 13, marginTop: 6, marginBottom: 20, textAlign: 'center', paddingHorizontal: 32 }}>
+              {!hasPermission
+                ? 'Please grant camera permission in your device settings and try again.'
+                : 'Please check your camera settings and try again.'}
+            </Text>
           </>
         ) : (
           <>
@@ -1343,8 +1377,18 @@ const EnrollCameraFeed: React.FC<{
       device={device}
       isActive={isActive}
       frameProcessor={frameProcessor}
-      fps={5}
+      photo={false}
+      video={true}
+      audio={false}
       pixelFormat="rgb"
+      onError={(error) => {
+        console.error('[EnrollCameraFeed] Camera error:', error);
+        setCameraError(error.message);
+      }}
+      onInitialized={() => {
+        console.log('[EnrollCameraFeed] Camera initialized successfully');
+        onCameraLoaded(true);
+      }}
     />
   );
 };

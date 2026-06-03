@@ -31,11 +31,9 @@ android {
     }
 
     // CRITICAL: Prevent tflite files from being compressed
-    // If compressed, models will fail to load at runtime
+    // If compressed, models will fail to load at runtime (mmap requires uncompressed)
     aaptOptions {
         noCompress "tflite"
-        noCompress "bin"
-        noCompress "lite"
     }
 
     signingConfigs {
@@ -71,7 +69,9 @@ android {
 
     packaging {
         jniLibs {
-            useLegacyPackaging true
+            // false = compress .so libs in APK (saves ~2-3 MB)
+            // Safe for minSdk 26+ (Android 8.0+)
+            useLegacyPackaging false
         }
         resources {
             pickFirsts += ['**/libc++_shared.so', '**/libfbjni.so']
@@ -81,6 +81,13 @@ android {
                 'META-INF/LICENSE*',
                 'META-INF/NOTICE*',
                 'META-INF/*.kotlin_module',
+                'META-INF/DEPENDENCIES',
+                'META-INF/INDEX.LIST',
+                'META-INF/io.netty.*',
+                'META-INF/versions/**',
+                'DebugProbesKt.bin',
+                'kotlin/**',
+                'kotlin-tooling-metadata.json',
             ]
         }
     }

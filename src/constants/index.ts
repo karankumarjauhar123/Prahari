@@ -11,7 +11,7 @@ export const MODEL_CONFIG = {
   INPUT_SIZE: 112,              // AdaFace input: 112x112
   DETECTION_INPUT_SIZE: 320,   // YOLOv8-face nano input
   EMBEDDING_DIM: 128,
-  DETECTION_CONFIDENCE_THRESHOLD: 0.7,
+  DETECTION_CONFIDENCE_THRESHOLD: 0.5,
   RECOGNITION_THRESHOLD: 0.72, // Cosine similarity threshold (tuned for Indian demographics)
   SPOOF_THRESHOLD: 0.65,       // Passive liveness threshold
 };
@@ -29,11 +29,11 @@ export const LIVENESS_CONFIG = {
 };
 
 export const QUALITY_CONFIG = {
-  MIN_BLUR_SCORE: 80,          // Laplacian variance
-  MIN_BRIGHTNESS: 35,
-  MAX_BRIGHTNESS: 220,
-  MIN_FACE_SIZE_PX: 80,        // Minimum face width/height in pixels
-  FACE_CENTER_TOLERANCE: 0.3,  // Face must be within center 30% of frame
+  MIN_BLUR_SCORE: 30,          // Laplacian variance (relaxed for mobile cameras)
+  MIN_BRIGHTNESS: 20,
+  MAX_BRIGHTNESS: 240,
+  MIN_FACE_SIZE_PX: 50,        // Minimum face width/height in pixels
+  FACE_CENTER_TOLERANCE: 0.45, // Face must be within center 45% of frame
 };
 
 export const DB_CONFIG = {

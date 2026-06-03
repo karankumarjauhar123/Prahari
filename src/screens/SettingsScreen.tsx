@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, ScrollView,
   TouchableOpacity, Switch, Alert, ActivityIndicator,
-  Animated, Easing,
+  Animated, Easing, TextInput,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -21,6 +21,7 @@ interface AppSettings {
   autoPurgeAfterSync: boolean;
   challengeCount: number;
   requirePassiveLiveness: boolean;
+  syncEndpoint: string;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -29,6 +30,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoPurgeAfterSync: true,
   challengeCount: 2,
   requirePassiveLiveness: true,
+  syncEndpoint: '',
 };
 
 const SETTINGS_KEY = '@prahari_settings';
@@ -75,7 +77,14 @@ export const SettingsScreen: React.FC = () => {
   const loadSettings = async () => {
     try {
       const raw = await AsyncStorage.getItem(SETTINGS_KEY);
-      if (raw) setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(raw) });
+      const savedEndpoint = await AsyncStorage.getItem('@prahari_sync_endpoint');
+      if (raw) {
+        const parsed = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+        if (savedEndpoint) parsed.syncEndpoint = savedEndpoint;
+        setSettings(parsed);
+      } else if (savedEndpoint) {
+        setSettings({ ...DEFAULT_SETTINGS, syncEndpoint: savedEndpoint });
+      }
     } catch (_) {}
   };
 
@@ -357,6 +366,42 @@ export const SettingsScreen: React.FC = () => {
 
       {/* ─── Sync & Purge ─── */}
       <Section title="SYNC & PURGE" index={4}>
+          {/* Sync Endpoint URL */}
+          <View style={styles.settingCard}>
+            <View style={styles.settingHeader}>
+              <Text style={styles.settingIcon}>🔗</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.settingLabel}>Sync Endpoint URL</Text>
+                <Text style={styles.settingHint}>Datalake 3.0 API endpoint for attendance sync</Text>
+              </View>
+            </View>
+            <TextInput
+              style={{
+                backgroundColor: 'rgba(255,255,255,0.06)',
+                borderRadius: 10,
+                paddingHorizontal: 14,
+                paddingVertical: 10,
+                color: '#FFFFFF',
+                fontSize: 12,
+                fontFamily: 'monospace',
+                marginTop: 10,
+                borderWidth: 1,
+                borderColor: 'rgba(255,255,255,0.08)',
+              }}
+              value={settings.syncEndpoint || ''}
+              onChangeText={(text) => {
+                const updated = { ...settings, syncEndpoint: text };
+                setSettings(updated);
+                AsyncStorage.setItem('@prahari_settings', JSON.stringify(updated));
+                AsyncStorage.setItem('@prahari_sync_endpoint', text);
+              }}
+              placeholder="https://your-api.execute-api.ap-south-1.amazonaws.com/prod/attendance/sync"
+              placeholderTextColor="rgba(255,255,255,0.2)"
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+            />
+          </View>
         <Row label="Auto-purge after sync" description="Automatically remove synced records from device">
           <Switch
             value={settings.autoPurgeAfterSync}
@@ -408,7 +453,7 @@ export const SettingsScreen: React.FC = () => {
           <Text style={styles.buildLogo}>◆</Text>
           <Text style={styles.buildAppName}>PRAHARI</Text>
         </View>
-        <Text style={styles.buildVersion}>v1.0.0 — Model size: ~8.5 MB</Text>
+        <Text style={styles.buildVersion}>v1.0.0 — Model size: ~12.7 MB</Text>
         <Text style={styles.buildModels}>AdaFace + MobileOne-S0 + MediaPipe FaceMesh</Text>
         <Text style={styles.buildCopyright}>On-device biometric security</Text>
       </View>
@@ -814,5 +859,30 @@ const styles = StyleSheet.create({
     fontSize: 10,
     letterSpacing: 0.4,
     marginTop: 4,
+  },
+
+  // ─── Setting Card (Sync Endpoint) ──────────
+  settingCard: {
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  settingHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  settingIcon: {
+    fontSize: 18,
+  },
+  settingLabel: {
+    color: '#DDD',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  settingHint: {
+    color: UI_COLORS.TEXT_SECONDARY,
+    fontSize: 11,
+    marginTop: 3,
+    lineHeight: 15,
   },
 });
