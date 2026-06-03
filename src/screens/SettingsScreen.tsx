@@ -1,6 +1,6 @@
 // src/screens/SettingsScreen.tsx
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView,
   TouchableOpacity, Switch, Alert, ActivityIndicator,
@@ -44,10 +44,38 @@ export const SettingsScreen: React.FC = () => {
   const [dbStats, setDbStats] = useState({ totalEmbeddings: 0, totalRecords: 0, unsyncedCount: 0 });
   const [showBenchmark, setShowBenchmark] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [syncEndpointInput, setSyncEndpointInput] = useState('');
 
   // ─── Animations ──────────────────────────────────────────
   const vaultGlow = useRef(new Animated.Value(0)).current;
   const benchmarkPulse = useRef(new Animated.Value(1)).current;
+
+  const loadSettings = useCallback(async () => {
+    try {
+      const raw = await AsyncStorage.getItem(SETTINGS_KEY);
+      const savedEndpoint = await AsyncStorage.getItem('@prahari_sync_endpoint');
+      let endpoint = '';
+      if (raw) {
+        const parsed = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+        if (savedEndpoint) parsed.syncEndpoint = savedEndpoint;
+        setSettings(parsed);
+        endpoint = parsed.syncEndpoint;
+      } else if (savedEndpoint) {
+        setSettings({ ...DEFAULT_SETTINGS, syncEndpoint: savedEndpoint });
+        endpoint = savedEndpoint;
+      }
+      setSyncEndpointInput(endpoint);
+    } catch (_) {}
+  }, []);
+
+  const loadStats = useCallback(async () => {
+    try {
+      const s = await DatabaseService.getStats();
+      setDbStats(s);
+    } catch (err) {
+      console.error('[SettingsScreen] Failed to load stats:', err);
+    }
+  }, []);
 
   useEffect(() => {
     const initScreen = async () => {
@@ -72,21 +100,7 @@ export const SettingsScreen: React.FC = () => {
         Animated.timing(benchmarkPulse, { toValue: 1, duration: 1200, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
       ])
     ).start();
-  }, []);
-
-  const loadSettings = async () => {
-    try {
-      const raw = await AsyncStorage.getItem(SETTINGS_KEY);
-      const savedEndpoint = await AsyncStorage.getItem('@prahari_sync_endpoint');
-      if (raw) {
-        const parsed = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
-        if (savedEndpoint) parsed.syncEndpoint = savedEndpoint;
-        setSettings(parsed);
-      } else if (savedEndpoint) {
-        setSettings({ ...DEFAULT_SETTINGS, syncEndpoint: savedEndpoint });
-      }
-    } catch (_) {}
-  };
+  }, [loadSettings, loadStats, vaultGlow, benchmarkPulse]);
 
   const saveSettings = async (updated: AppSettings) => {
     try {
@@ -94,16 +108,6 @@ export const SettingsScreen: React.FC = () => {
       await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(updated));
     } catch (err) {
       console.error('[SettingsScreen] Failed to save settings:', err);
-    }
-  };
-
-  const loadStats = async () => {
-    try {
-      const s = await DatabaseService.getStats();
-      setDbStats(s);
-    } catch (err) {
-      console.error('[SettingsScreen] Failed to load stats:', err);
-      // Keep default values — don't crash the screen
     }
   };
 
@@ -412,12 +416,13 @@ export const SettingsScreen: React.FC = () => {
                 borderWidth: 1,
                 borderColor: 'rgba(255,255,255,0.08)',
               }}
-              value={settings.syncEndpoint || ''}
-              onChangeText={(text) => {
-                const updated = { ...settings, syncEndpoint: text };
+              value={syncEndpointInput}
+              onChangeText={setSyncEndpointInput}
+              onBlur={() => {
+                const updated = { ...settings, syncEndpoint: syncEndpointInput };
                 setSettings(updated);
-                AsyncStorage.setItem('@prahari_settings', JSON.stringify(updated));
-                AsyncStorage.setItem('@prahari_sync_endpoint', text);
+                AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(updated));
+                AsyncStorage.setItem('@prahari_sync_endpoint', syncEndpointInput);
               }}
               placeholder="https://your-api.execute-api.ap-south-1.amazonaws.com/prod/attendance/sync"
               placeholderTextColor="rgba(255,255,255,0.2)"

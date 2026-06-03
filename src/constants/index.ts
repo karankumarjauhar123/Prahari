@@ -21,7 +21,7 @@ export const LIVENESS_CONFIG = {
   CHALLENGE_TIMEOUT_MS: 5000,  // 5 sec per challenge
   EAR_BLINK_THRESHOLD: 0.21,   // Eye Aspect Ratio — blink detected below this
   EAR_CONSECUTIVE_FRAMES: 2,   // Min frames for valid blink
-  SMILE_THRESHOLD: 0.38,       // Lip corner ratio for smile
+  SMILE_THRESHOLD: 1.45,       // Lip corner ratio for smile (tuned for outer mouth/eye ratio)
   HEAD_TURN_ANGLE: 20,         // Degrees for left/right turn
   NOD_ANGLE: 15,               // Degrees for nod
   MIN_OPTICAL_FLOW_REAL: 0.15, // Min motion for real face

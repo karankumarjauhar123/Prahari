@@ -241,6 +241,7 @@ class FaceEngineService {
     const kernel = [0, 1, 0, 1, -4, 1, 0, 1, 0];
     let sum = 0, sumSq = 0;
     const n = (width - 2) * (height - 2);
+    if (n <= 0) return 0;
 
     for (let y = 1; y < height - 1; y++) {
       for (let x = 1; x < width - 1; x++) {
@@ -566,10 +567,10 @@ class FaceEngineService {
     frameHeight: number
   ): Float32Array {
     'worklet';
-    const x = Math.max(0, Math.floor(face.x));
-    const y = Math.max(0, Math.floor(face.y));
-    const w = Math.min(frameWidth - x, Math.ceil(face.width));
-    const h = Math.min(frameHeight - y, Math.ceil(face.height));
+    const x = Math.max(0, Math.min(frameWidth, Math.floor(face.x)));
+    const y = Math.max(0, Math.min(frameHeight, Math.floor(face.y)));
+    const w = Math.max(0, Math.min(frameWidth - x, Math.ceil(face.width)));
+    const h = Math.max(0, Math.min(frameHeight - y, Math.ceil(face.height)));
     const roi = new Float32Array(w * h * 3);
 
     for (let row = 0; row < h; row++) {

@@ -1,7 +1,7 @@
 // src/screens/AuthScreen.tsx
 // Main authentication screen with live camera feed — Premium UI
 
-import React, { useRef, useState, useEffect, useCallback } from 'react';
+import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View, Text, StyleSheet, Dimensions, TouchableOpacity,
   Animated, StatusBar, ActivityIndicator,
@@ -129,7 +129,7 @@ export const AuthScreen: React.FC = () => {
 
   // ─── Frame Processor (sync worklet — no ArrayBuffer crosses to JS) ──────
 
-  const handleFrameResultOnJS = Worklets.createRunOnJS(handleFrameResult);
+  const handleFrameResultOnJS = useMemo(() => Worklets.createRunOnJS(handleFrameResult), [handleFrameResult]);
 
   // Get model references (JSI host objects — safe in worklet closure)
   const detModel = modelsLoaded ? FaceEngine.detectionModel : null;
@@ -168,12 +168,13 @@ export const AuthScreen: React.FC = () => {
         let passiveScore = 0;
         if (spoofModel && quality.pass) {
           try {
-            const cropX = Math.max(0, Math.floor(face.x - face.width * 0.1));
-            const cropY = Math.max(0, Math.floor(face.y - face.height * 0.1));
-            const cropW = Math.min(face.width * 1.2, width - cropX);
-            const cropH = Math.min(face.height * 1.2, height - cropY);
-            const cropped = wCropResize(pixels, cropX, cropY, cropW, cropH, width, 224);
-            const normalized = new Float32Array(224 * 224 * 3);
+            const pad = 0.1;
+            const cropX = Math.max(0, Math.min(width, Math.floor(face.x - face.width * pad)));
+            const cropY = Math.max(0, Math.min(height, Math.floor(face.y - face.height * pad)));
+            const cropW = Math.max(0, Math.min(width - cropX, face.width * (1 + 2 * pad)));
+            const cropH = Math.max(0, Math.min(height - cropY, face.height * (1 + 2 * pad)));
+            const cropped = wCropResize(pixels, cropX, cropY, cropW, cropH, width, 80);
+            const normalized = new Float32Array(80 * 80 * 3);
             for (let i = 0; i < normalized.length; i++) normalized[i] = cropped[i] / 255.0;
             const spoofOut = spoofModel.runSync([normalized]);
             passiveScore = (spoofOut[0] as Float32Array)[0];
@@ -190,7 +191,7 @@ export const AuthScreen: React.FC = () => {
         if (activeLivenessFlag.value && meshModel) {
           try {
             const challengeResult = LivenessEngine.checkChallengeSync(
-              pixels, face, width, height
+              pixels, face, width, height, meshModel
             );
             challengeCompleted = challengeResult.completed;
             challengeTimedOut = challengeResult.timedOut;

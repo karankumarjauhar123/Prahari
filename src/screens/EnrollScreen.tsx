@@ -1,7 +1,7 @@
 // src/screens/EnrollScreen.tsx
 // Enroll a new field personnel — capture 5 frames, average embeddings
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   View, Text, TextInput, StyleSheet, TouchableOpacity,
   Alert, ScrollView, ActivityIndicator, StatusBar,
@@ -433,7 +433,7 @@ export const EnrollScreen: React.FC = () => {
     }
   }, []); // Empty dependencies ensures VisionCamera frame processor is never re-registered during typing
 
-  const handleEmbeddingOnJS = Worklets.createRunOnJS(handleEmbeddingResult);
+  const handleEmbeddingOnJS = useMemo(() => Worklets.createRunOnJS(handleEmbeddingResult), [handleEmbeddingResult]);
 
   const handleFrameStatus = useCallback((
     hasFace: boolean,
@@ -464,7 +464,7 @@ export const EnrollScreen: React.FC = () => {
     }
   }, []);
 
-  const handleFrameStatusOnJS = Worklets.createRunOnJS(handleFrameStatus);
+  const handleFrameStatusOnJS = useMemo(() => Worklets.createRunOnJS(handleFrameStatus), [handleFrameStatus]);
 
   // Get model references (JSI host objects — safe to capture in worklet closure)
   const detModel = modelsLoaded ? FaceEngine.detectionModel : null;

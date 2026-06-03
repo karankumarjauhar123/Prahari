@@ -229,6 +229,15 @@ class DatabaseServiceClass {
     );
   }
 
+  async markFailed(ids: string[]): Promise<void> {
+    if (!this.db || ids.length === 0) return;
+    const placeholders = ids.map(() => '?').join(',');
+    await this.db.executeSql(
+      `UPDATE attendance_records SET synced = 2 WHERE id IN (${placeholders})`,
+      ids
+    );
+  }
+
   async purgeSyncedRecords(): Promise<number> {
     if (!this.db) return 0;
     const [result] = await this.db.executeSql(

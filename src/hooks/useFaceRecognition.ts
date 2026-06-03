@@ -269,42 +269,53 @@ export const useFaceRecognition = (props: Props) => {
 
       // ── Step 5: Face Recognition ──
       if (stateRef.current === 'RECOGNIZING' && result.embedding) {
-        // Match embedding against enrolled faces (JS thread, no ArrayBuffer)
-        const matchResult = FaceEngine.matchEmbedding(result.embedding);
+        try {
+          // Match embedding against enrolled faces (JS thread, no ArrayBuffer)
+          const matchResult = FaceEngine.matchEmbedding(result.embedding);
 
-        if (matchResult.matched && matchResult.userId && matchResult.userName) {
-          // Compute image hash from embedding values (no pixel data needed)
-          const sampleHex = result.embedding.slice(0, 50)
-            .map(v => Math.round(Math.abs(v) * 255).toString(16).padStart(2, '0'))
-            .join('');
-          const imageHash = await AesCrypto.sha256(sampleHex);
+          if (matchResult.matched && matchResult.userId && matchResult.userName) {
+            // Compute image hash from embedding values (no pixel data needed)
+            const sampleHex = result.embedding.slice(0, 50)
+              .map(v => Math.round(Math.abs(v) * 255).toString(16).padStart(2, '0'))
+              .join('');
+            const imageHash = await AesCrypto.sha256(sampleHex);
 
-          const record: AttendanceRecord = {
-            id: uuid(),
-            userId: matchResult.userId,
-            userName: matchResult.userName,
-            employeeId: matchResult.employeeId ?? '',
-            timestamp: Date.now(),
-            confidence: matchResult.confidence,
-            livenessScore: passiveScoreRef.current,
-            synced: false,
-            imageHash,
-          };
+            const record: AttendanceRecord = {
+              id: uuid(),
+              userId: matchResult.userId,
+              userName: matchResult.userName,
+              employeeId: matchResult.employeeId ?? '',
+              timestamp: Date.now(),
+              confidence: matchResult.confidence,
+              livenessScore: passiveScoreRef.current,
+              synced: false,
+              imageHash,
+            };
 
-          await DatabaseService.saveAttendance(record);
+            await DatabaseService.saveAttendance(record);
 
-          updateState('SUCCESS');
-          propsRef.current.onSuccess(matchResult.userName, matchResult.confidence);
+            updateState('SUCCESS');
+            propsRef.current.onSuccess(matchResult.userName, matchResult.confidence);
 
-          resetTimeoutRef.current = setTimeout(() => {
-            updateState('WAITING_FACE');
-            activeCompleteRef.current = false;
-            passiveScoreRef.current = 0;
-            propsRef.current.onChallengeChange(null);
-          }, 3000);
-        } else {
+            resetTimeoutRef.current = setTimeout(() => {
+              updateState('WAITING_FACE');
+              activeCompleteRef.current = false;
+              passiveScoreRef.current = 0;
+              propsRef.current.onChallengeChange(null);
+            }, 3000);
+          } else {
+            updateState('FAILED');
+            propsRef.current.onFailed('Face not recognized');
+            resetTimeoutRef.current = setTimeout(() => {
+              updateState('WAITING_FACE');
+              activeCompleteRef.current = false;
+              passiveScoreRef.current = 0;
+            }, 2000);
+          }
+        } catch (dbErr: any) {
+          console.error('[useFaceRecognition] Face recognition save/match failed:', dbErr);
           updateState('FAILED');
-          propsRef.current.onFailed('Face not recognized');
+          propsRef.current.onFailed(dbErr?.message || 'Biometric database error');
           resetTimeoutRef.current = setTimeout(() => {
             updateState('WAITING_FACE');
             activeCompleteRef.current = false;
@@ -323,7 +334,7 @@ export const useFaceRecognition = (props: Props) => {
   // ─── Enrollment trigger ───────────────────────────────────────────────────
 
   const startEnrollment = useCallback(() => {
-    props.onStateChange('WAITING_FACE');
+    propsRef.current.onStateChange('WAITING_FACE');
   }, []);
 
   return {

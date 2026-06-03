@@ -59,52 +59,57 @@ export const BenchmarkOverlay: React.FC<Props> = ({ visible, onClose }) => {
   const runBenchmarkTest = async () => {
     setIsRunning(true);
     setRuns([]);
-    // Run 5 actual model inference benchmarks
-    for (let i = 0; i < 5; i++) {
-      // Benchmark face detection model (YOLOv8-face nano)
-      let detMs = 0;
-      if (FaceEngine.detectionModel) {
-        const dummyDet = new Float32Array(320 * 320 * 3);
-        const detStart = Date.now();
-        try { await FaceEngine.detectionModel.run([dummyDet]); } catch {}
-        detMs = Date.now() - detStart;
-      }
+    try {
+      // Run 5 actual model inference benchmarks
+      for (let i = 0; i < 5; i++) {
+        // Benchmark face detection model (YOLOv8-face nano)
+        let detMs = 0;
+        if (FaceEngine.detectionModel) {
+          const dummyDet = new Float32Array(320 * 320 * 3);
+          const detStart = Date.now();
+          try { await FaceEngine.detectionModel.run([dummyDet]); } catch {}
+          detMs = Date.now() - detStart;
+        }
 
-      // Benchmark anti-spoof liveness model
-      let liveMs = 0;
-      if (LivenessEngine.antiSpoofModel) {
-        const dummyLive = new Float32Array(80 * 80 * 3);
-        const liveStart = Date.now();
-        try { await LivenessEngine.antiSpoofModel.run([dummyLive]); } catch {}
-        liveMs = Date.now() - liveStart;
-      }
+        // Benchmark anti-spoof liveness model
+        let liveMs = 0;
+        if (LivenessEngine.antiSpoofModel) {
+          const dummyLive = new Float32Array(80 * 80 * 3);
+          const liveStart = Date.now();
+          try { await LivenessEngine.antiSpoofModel.run([dummyLive]); } catch {}
+          liveMs = Date.now() - liveStart;
+        }
 
-      // Benchmark face mesh model (if loaded)
-      if (LivenessEngine.faceMeshModel) {
-        const dummyMesh = new Float32Array(192 * 192 * 3);
-        const meshStart = Date.now();
-        try { await LivenessEngine.faceMeshModel.run([dummyMesh]); } catch {}
-        liveMs += Date.now() - meshStart;
-      }
+        // Benchmark face mesh model (if loaded)
+        if (LivenessEngine.faceMeshModel) {
+          const dummyMesh = new Float32Array(192 * 192 * 3);
+          const meshStart = Date.now();
+          try { await LivenessEngine.faceMeshModel.run([dummyMesh]); } catch {}
+          liveMs += Date.now() - meshStart;
+        }
 
-      // Benchmark face recognition model (AdaFace)
-      let recMs = 0;
-      if (FaceEngine.recognitionModel) {
-        const dummyRec = new Float32Array(112 * 112 * 3);
-        const recStart = Date.now();
-        try { await FaceEngine.recognitionModel.run([dummyRec]); } catch {}
-        recMs = Date.now() - recStart;
-      }
+        // Benchmark face recognition model (AdaFace)
+        let recMs = 0;
+        if (FaceEngine.recognitionModel) {
+          const dummyRec = new Float32Array(112 * 112 * 3);
+          const recStart = Date.now();
+          try { await FaceEngine.recognitionModel.run([dummyRec]); } catch {}
+          recMs = Date.now() - recStart;
+        }
 
-      const run: BenchmarkRun = {
-        detection: Math.round(detMs),
-        liveness: Math.round(liveMs),
-        recognition: Math.round(recMs),
-        total: Math.round(detMs + liveMs + recMs),
-      };
-      setRuns(prev => [...prev, run]);
+        const run: BenchmarkRun = {
+          detection: Math.round(detMs),
+          liveness: Math.round(liveMs),
+          recognition: Math.round(recMs),
+          total: Math.round(detMs + liveMs + recMs),
+        };
+        setRuns(prev => [...prev, run]);
+      }
+    } catch (err) {
+      console.error('[BenchmarkOverlay] Benchmark run failed:', err);
+    } finally {
+      setIsRunning(false);
     }
-    setIsRunning(false);
   };
 
   const avg = (key: keyof BenchmarkRun) =>

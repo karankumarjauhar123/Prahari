@@ -18,9 +18,9 @@ class LivenessEngineService {
   public antiSpoofModel: TensorflowModel | null = null;
   public faceMeshModel: TensorflowModel | null = null;
 
-  // Optical flow state
-  public prevFrame: Float32Array | null = null;
-  public prevFrameW = 0;
+  // Optical flow state (Shared values to synchronize between JS and Worklet threads)
+  public prevFrameShared = Worklets.createSharedValue<Float32Array | null>(null);
+  public prevFrameWShared = Worklets.createSharedValue<number>(0);
 
   // Active challenge state (Shared values to synchronize between JS and Worklet threads)
   public currentChallengesShared = Worklets.createSharedValue<LivenessChallenge[]>([]);
@@ -29,6 +29,7 @@ class LivenessEngineService {
   public smileFrameCountShared = Worklets.createSharedValue<number>(0);
   public headTurnDetectedShared = Worklets.createSharedValue<boolean>(false);
   public challengeStartTimeShared = Worklets.createSharedValue<number>(0);
+  public nodBaselineShared = Worklets.createSharedValue<number>(-1);
 
   // Shared values to synchronize state between JS and Worklet threads
   public challengeCountShared = Worklets.createSharedValue<number>(LIVENESS_CONFIG.CHALLENGE_COUNT);
@@ -98,10 +99,10 @@ class LivenessEngineService {
 
     // Crop face with 20% padding
     const pad = 0.2;
-    const x = Math.max(0, face.x - face.width * pad);
-    const y = Math.max(0, face.y - face.height * pad);
-    const w = Math.min(frameWidth - x, face.width * (1 + 2 * pad));
-    const h = Math.min(frameHeight - y, face.height * (1 + 2 * pad));
+    const x = Math.max(0, Math.min(frameWidth, face.x - face.width * pad));
+    const y = Math.max(0, Math.min(frameHeight, face.y - face.height * pad));
+    const w = Math.max(0, Math.min(frameWidth - x, face.width * (1 + 2 * pad)));
+    const h = Math.max(0, Math.min(frameHeight - y, face.height * (1 + 2 * pad)));
 
     const crop = this.cropResize(pixels, x, y, w, h, frameWidth, 80);
 
@@ -120,13 +121,14 @@ class LivenessEngineService {
     pixels: Float32Array,
     face: FaceDetection,
     frameWidth: number,
-    frameHeight: number
+    frameHeight: number,
+    antiSpoofModel: TensorflowModel
   ): number {
     'worklet';
     const scores: number[] = [];
 
     // A) Anti-spoof deep model score
-    scores.push(LivenessEngine.antiSpoofScoreSync(pixels, face, frameWidth, frameHeight));
+    scores.push(LivenessEngine.antiSpoofScoreSync(pixels, face, frameWidth, frameHeight, antiSpoofModel));
 
     // B) Optical flow — real face has natural micro-movements
     scores.push(LivenessEngine.opticalFlowScore(pixels, frameWidth, frameHeight));
@@ -143,17 +145,18 @@ class LivenessEngineService {
     pixels: Float32Array,
     face: FaceDetection,
     frameWidth: number,
-    frameHeight: number
+    frameHeight: number,
+    antiSpoofModel: TensorflowModel
   ): number {
     'worklet';
-    if (!LivenessEngine.antiSpoofModel) return 0.5;
+    if (!antiSpoofModel) return 0.5;
 
     // Crop face with 20% padding
     const pad = 0.2;
-    const x = Math.max(0, face.x - face.width * pad);
-    const y = Math.max(0, face.y - face.height * pad);
-    const w = Math.min(frameWidth - x, face.width * (1 + 2 * pad));
-    const h = Math.min(frameHeight - y, face.height * (1 + 2 * pad));
+    const x = Math.max(0, Math.min(frameWidth, face.x - face.width * pad));
+    const y = Math.max(0, Math.min(frameHeight, face.y - face.height * pad));
+    const w = Math.max(0, Math.min(frameWidth - x, face.width * (1 + 2 * pad)));
+    const h = Math.max(0, Math.min(frameHeight - y, face.height * (1 + 2 * pad)));
 
     const crop = LivenessEngine.cropResize(pixels, x, y, w, h, frameWidth, 80);
 
@@ -161,7 +164,7 @@ class LivenessEngineService {
     const input = new Float32Array(80 * 80 * 3);
     for (let i = 0; i < input.length; i++) input[i] = crop[i] / 255.0;
 
-    const output = LivenessEngine.antiSpoofModel.runSync([input]);
+    const output = antiSpoofModel.runSync([input]);
     const result = output[0] as Float32Array;
     return result[0];
   }
@@ -173,9 +176,9 @@ class LivenessEngineService {
     frameHeight: number
   ): number {
     'worklet';
-    if (!LivenessEngine.prevFrame || LivenessEngine.prevFrameW !== frameWidth) {
-      LivenessEngine.prevFrame = new Float32Array(pixels);
-      LivenessEngine.prevFrameW = frameWidth;
+    if (!LivenessEngine.prevFrameShared.value || LivenessEngine.prevFrameWShared.value !== frameWidth || LivenessEngine.prevFrameShared.value.length !== pixels.length) {
+      LivenessEngine.prevFrameShared.value = new Float32Array(pixels);
+      LivenessEngine.prevFrameWShared.value = frameWidth;
       return 0.5; // neutral on first frame
     }
 
@@ -184,15 +187,20 @@ class LivenessEngineService {
     const step = 8; // Sample every 8th pixel for speed
     let count = 0;
 
+    const prevFrame = LivenessEngine.prevFrameShared.value;
     for (let i = 0; i < pixels.length - 2; i += step * 3) {
       const currGray = pixels[i] * 0.299 + pixels[i+1] * 0.587 + pixels[i+2] * 0.114;
-      const prevGray = LivenessEngine.prevFrame[i] * 0.299 + LivenessEngine.prevFrame[i+1] * 0.587 + LivenessEngine.prevFrame[i+2] * 0.114;
-      totalMotion += Math.abs(currGray - prevGray);
-      count++;
+      const prevGray = prevFrame[i] * 0.299 + prevFrame[i+1] * 0.587 + prevFrame[i+2] * 0.114;
+      if (!Number.isNaN(currGray) && !Number.isNaN(prevGray)) {
+        totalMotion += Math.abs(currGray - prevGray);
+        count++;
+      }
     }
 
-    LivenessEngine.prevFrame = new Float32Array(pixels);
-    const avgMotion = totalMotion / (count * 255);
+    LivenessEngine.prevFrameShared.value.set(pixels);
+    const avgMotion = count > 0 ? totalMotion / (count * 255) : 0;
+
+    if (Number.isNaN(avgMotion)) return 0.5;
 
     // Real face: small but non-zero motion (0.05–0.3 range)
     // Static photo: near zero motion (< 0.02)
@@ -209,14 +217,15 @@ class LivenessEngineService {
     frameWidth: number
   ): number {
     'worklet';
-    const frameHeight = pixels.length / (frameWidth * 3);
-    const x = Math.max(1, Math.floor(face.x));
-    const y = Math.max(1, Math.floor(face.y));
-    const w = Math.min(frameWidth - 1 - x, Math.floor(face.width));
-    const h = Math.min(frameHeight - 1 - y, Math.floor(face.height));
+    const frameHeight = Math.floor(pixels.length / (frameWidth * 3));
+    if (frameWidth <= 2 || frameHeight <= 2) return 0.1;
+    const x = Math.max(1, Math.min(frameWidth - 2, Math.floor(face.x)));
+    const y = Math.max(1, Math.min(frameHeight - 2, Math.floor(face.y)));
+    const w = Math.max(1, Math.min(frameWidth - 1 - x, Math.floor(face.width)));
+    const h = Math.max(1, Math.min(frameHeight - 1 - y, Math.floor(face.height)));
 
     const histSize = 256;
-    const hist = new Array(histSize).fill(0);
+    const hist = new Uint32Array(histSize);
     let totalPixels = 0;
 
     // Compute LBP for each pixel in face ROI
@@ -241,6 +250,7 @@ class LivenessEngineService {
 
     // Entropy of LBP histogram — real skin has higher entropy
     let entropy = 0;
+    if (totalPixels === 0) return 0.1;
     for (let i = 0; i < histSize; i++) {
       if (hist[i] > 0) {
         const p = hist[i] / totalPixels;
@@ -251,13 +261,17 @@ class LivenessEngineService {
     // Printed/screen face: low entropy (uniform texture)
     // Real face: high entropy (organic texture variation)
     const normalizedEntropy = entropy / Math.log2(histSize); // normalize to [0,1]
+    if (Number.isNaN(normalizedEntropy)) return 0.5;
     return normalizedEntropy > 0.6 ? 0.85 : normalizedEntropy < 0.35 ? 0.15 : normalizedEntropy;
   }
 
   private getGray(pixels: Float32Array, x: number, y: number, w: number): number {
     'worklet';
     const idx = (y * w + x) * 3;
-    return pixels[idx] * 0.299 + pixels[idx+1] * 0.587 + pixels[idx+2] * 0.114;
+    const r = pixels[idx] ?? 0;
+    const g = pixels[idx+1] ?? 0;
+    const b = pixels[idx+2] ?? 0;
+    return r * 0.299 + g * 0.587 + b * 0.114;
   }
 
   // ─── Stage 2: Active Challenge ────────────────────────────────────────────
@@ -273,6 +287,7 @@ class LivenessEngineService {
     LivenessEngine.blinkFrameCountShared.value = 0;
     LivenessEngine.smileFrameCountShared.value = 0;
     LivenessEngine.headTurnDetectedShared.value = false;
+    LivenessEngine.nodBaselineShared.value = -1;
     LivenessEngine.challengeStartTimeShared.value = Date.now();
     return LivenessEngine.currentChallengesShared.value;
   }
@@ -326,6 +341,7 @@ class LivenessEngineService {
       this.blinkFrameCountShared.value = 0;
       this.smileFrameCountShared.value = 0;
       this.headTurnDetectedShared.value = false;
+      this.nodBaselineShared.value = -1;
       this.challengeStartTimeShared.value = Date.now(); // reset timer for next challenge
     }
 
@@ -345,8 +361,13 @@ class LivenessEngineService {
   ): Promise<FaceMeshLandmarks | null> {
     if (!this.faceMeshModel) return null;
 
+    const x = Math.max(0, Math.min(frameWidth, face.x));
+    const y = Math.max(0, Math.min(frameHeight, face.y));
+    const w = Math.max(0, Math.min(frameWidth - x, face.width));
+    const h = Math.max(0, Math.min(frameHeight - y, face.height));
+
     const crop = this.cropResize(
-      pixels, face.x, face.y, face.width, face.height, frameWidth, 192
+      pixels, x, y, w, h, frameWidth, 192
     );
     const input = new Float32Array(192 * 192 * 3);
     for (let i = 0; i < input.length; i++) input[i] = crop[i] / 255.0;
@@ -381,7 +402,8 @@ class LivenessEngineService {
     pixels: Float32Array,
     face: FaceDetection,
     frameWidth: number,
-    frameHeight: number
+    frameHeight: number,
+    faceMeshModel: TensorflowModel
   ): { completed: boolean; timedOut: boolean; currentChallenge: LivenessChallenge | null } {
     'worklet';
     const elapsed = Date.now() - LivenessEngine.challengeStartTimeShared.value;
@@ -389,7 +411,7 @@ class LivenessEngineService {
       return { completed: false, timedOut: true, currentChallenge: null };
     }
 
-    const mesh = LivenessEngine.getFaceMeshSync(pixels, face, frameWidth, frameHeight);
+    const mesh = LivenessEngine.getFaceMeshSync(pixels, face, frameWidth, frameHeight, faceMeshModel);
     if (!mesh) return { completed: false, timedOut: false, currentChallenge: LivenessEngine.getCurrentChallenge() };
 
     const challenge = LivenessEngine.getCurrentChallenge();
@@ -420,6 +442,7 @@ class LivenessEngineService {
       LivenessEngine.blinkFrameCountShared.value = 0;
       LivenessEngine.smileFrameCountShared.value = 0;
       LivenessEngine.headTurnDetectedShared.value = false;
+      LivenessEngine.nodBaselineShared.value = -1;
       LivenessEngine.challengeStartTimeShared.value = Date.now(); // reset timer for next challenge
     }
 
@@ -435,18 +458,24 @@ class LivenessEngineService {
     pixels: Float32Array,
     face: FaceDetection,
     frameWidth: number,
-    frameHeight: number
+    frameHeight: number,
+    faceMeshModel: TensorflowModel
   ): FaceMeshLandmarks | null {
     'worklet';
-    if (!LivenessEngine.faceMeshModel) return null;
+    if (!faceMeshModel) return null;
+
+    const x = Math.max(0, Math.min(frameWidth, face.x));
+    const y = Math.max(0, Math.min(frameHeight, face.y));
+    const w = Math.max(0, Math.min(frameWidth - x, face.width));
+    const h = Math.max(0, Math.min(frameHeight - y, face.height));
 
     const crop = LivenessEngine.cropResize(
-      pixels, face.x, face.y, face.width, face.height, frameWidth, 192
+      pixels, x, y, w, h, frameWidth, 192
     );
     const input = new Float32Array(192 * 192 * 3);
     for (let i = 0; i < input.length; i++) input[i] = crop[i] / 255.0;
 
-    const outputs = LivenessEngine.faceMeshModel.runSync([input]);
+    const outputs = faceMeshModel.runSync([input]);
     const landmarks = outputs[0] as Float32Array;
 
     const points: Point[] = [];
@@ -554,7 +583,14 @@ class LivenessEngineService {
     const noseToEyeDist = noseTip.y - leftEye.y;
     // Normalize nose-to-eye vertical distance by face width to make it scale-invariant
     const normalizedDist = noseToEyeDist / Math.max(faceWidth, 1);
-    return normalizedDist > 0.65;
+    
+    if (LivenessEngine.nodBaselineShared.value < 0) {
+      LivenessEngine.nodBaselineShared.value = normalizedDist;
+      return false;
+    }
+    const deviation = Math.abs(normalizedDist - LivenessEngine.nodBaselineShared.value);
+    const nodThreshold = 0.15; // 15% change in vertical nose-eye ratio
+    return deviation > nodThreshold;
   }
 
   // ─── Full Liveness Assessment (Async version for JS context) ─────────────
@@ -587,10 +623,11 @@ class LivenessEngineService {
     face: FaceDetection,
     frameWidth: number,
     frameHeight: number,
-    activeCompleted: boolean
+    activeCompleted: boolean,
+    antiSpoofModel: TensorflowModel
   ): LivenessResult {
     'worklet';
-    const passiveScore = LivenessEngine.runPassiveLivenessSync(pixels, face, frameWidth, frameHeight);
+    const passiveScore = LivenessEngine.runPassiveLivenessSync(pixels, face, frameWidth, frameHeight, antiSpoofModel);
     const spoofDetected = passiveScore < MODEL_CONFIG.SPOOF_THRESHOLD;
     const activeScore = activeCompleted ? 1.0 : 0.0;
     const totalScore = passiveScore * 0.6 + activeScore * 0.4;
@@ -613,9 +650,10 @@ class LivenessEngineService {
 
   private centroid(points: Point[]): Point {
     'worklet';
+    const len = Math.max(points.length, 1);
     return {
-      x: points.reduce((s, p) => s + p.x, 0) / points.length,
-      y: points.reduce((s, p) => s + p.y, 0) / points.length,
+      x: points.reduce((s, p) => s + p.x, 0) / len,
+      y: points.reduce((s, p) => s + p.y, 0) / len,
     };
   }
 
@@ -624,7 +662,7 @@ class LivenessEngineService {
     w: number, h: number, frameWidth: number, targetSize: number
   ): Float32Array {
     'worklet';
-    const frameHeight = pixels.length / (frameWidth * 3);
+    const frameHeight = Math.floor(pixels.length / (frameWidth * 3));
     const output = new Float32Array(targetSize * targetSize * 3);
     const scaleX = w / targetSize, scaleY = h / targetSize;
 
@@ -637,9 +675,9 @@ class LivenessEngineService {
         let r = 0, g = 0, b = 0;
         if (sx >= 0 && sx < frameWidth && sy >= 0 && sy < frameHeight) {
           const srcIdx = (sy * frameWidth + sx) * 3;
-          r = pixels[srcIdx];
-          g = pixels[srcIdx+1];
-          b = pixels[srcIdx+2];
+          r = pixels[srcIdx] ?? 0;
+          g = pixels[srcIdx+1] ?? 0;
+          b = pixels[srcIdx+2] ?? 0;
         }
         
         output[dstIdx] = r;
@@ -664,7 +702,7 @@ class LivenessEngineService {
 
   resetOpticalFlow(): void {
     'worklet';
-    LivenessEngine.prevFrame = null;
+    LivenessEngine.prevFrameShared.value = null;
   }
 }
 
