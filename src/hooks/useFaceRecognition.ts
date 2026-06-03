@@ -98,12 +98,8 @@ export const useFaceRecognition = (props: Props) => {
     frameCountRef.current++;
 
     try {
-      // Convert camera frame buffer to Float32Array RGB
-      const uint8 = new Uint8Array(buffer);
-      const pixels = new Float32Array(uint8.length);
-      for (let i = 0; i < uint8.length; i++) {
-        pixels[i] = uint8[i];
-      }
+      // Convert camera frame buffer to Float32Array RGB using native C++ conversion constructor
+      const pixels = new Float32Array(new Uint8Array(buffer));
 
       // ── Step 1: Face Detection ──
       const face = await FaceEngine.detectFace(pixels, width, height);

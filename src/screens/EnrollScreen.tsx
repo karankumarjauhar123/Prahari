@@ -429,7 +429,13 @@ export const EnrollScreen: React.FC = () => {
       const width = frame.width;
       const height = frame.height;
       const buffer = frame.toArrayBuffer();
-      handleCaptureFrameDataOnJS(buffer, width, height);
+      
+      // Copy the direct hardware memory buffer to a standard JS-allocated buffer
+      // to allow passing it safely across the worklet thread boundary.
+      const copy = new Uint8Array(buffer.byteLength);
+      copy.set(new Uint8Array(buffer));
+      
+      handleCaptureFrameDataOnJS(copy.buffer, width, height);
     });
   }, [handleCaptureFrameDataOnJS]);
 

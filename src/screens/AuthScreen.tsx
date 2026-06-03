@@ -132,7 +132,13 @@ export const AuthScreen: React.FC = () => {
       const width = frame.width;
       const height = frame.height;
       const buffer = frame.toArrayBuffer();
-      processFrameOnJS(buffer, width, height);
+      
+      // Copy the direct hardware memory buffer to a standard JS-allocated buffer
+      // to allow passing it safely across the worklet thread boundary.
+      const copy = new Uint8Array(buffer.byteLength);
+      copy.set(new Uint8Array(buffer));
+      
+      processFrameOnJS(copy.buffer, width, height);
     });
   }, [isReady, processFrameOnJS]);
 
