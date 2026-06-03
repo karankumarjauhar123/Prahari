@@ -55,13 +55,13 @@ class SyncServiceClass {
 
   // ─── Main Sync Logic ──────────────────────────────────────────────────────
 
-  async syncPendingRecords(): Promise<void> {
-    if (!this.isOnline || this.isSyncing) return;
+  async syncPendingRecords(): Promise<boolean> {
+    if (!this.isOnline || this.isSyncing) return false;
 
     const pending = await DatabaseService.getUnsynced();
     if (pending.length === 0) {
       console.log('[SyncService] ✅ Nothing to sync');
-      return;
+      return true;
     }
 
     this.isSyncing = true;
@@ -125,11 +125,12 @@ class SyncServiceClass {
           console.error('[SyncService] Auto-purge failed:', purgeError);
         }
       }
-
+      return true;
     } catch (error) {
       console.error('[SyncService] ❌ Sync failed:', error);
       // Retry after 30 seconds
       setTimeout(() => this.syncPendingRecords(), 30000);
+      return false;
     } finally {
       this.isSyncing = false;
       await this.notifyListeners();
@@ -178,8 +179,12 @@ class SyncServiceClass {
       return { success: false, message: 'No internet connection. Records are securely queued on device.' };
     }
     try {
-      await this.syncPendingRecords();
-      return { success: true, message: 'Sync completed successfully' };
+      const success = await this.syncPendingRecords();
+      if (success) {
+        return { success: true, message: 'Sync completed successfully' };
+      } else {
+        return { success: false, message: 'Sync failed — will retry automatically when online' };
+      }
     } catch {
       return { success: false, message: 'Sync failed — will retry automatically when online' };
     }

@@ -473,8 +473,24 @@ class LivenessEngineService {
 
   private checkBlink(mesh: FaceMeshLandmarks): boolean {
     'worklet';
-    const leftEAR = LivenessEngine.eyeAspectRatio(mesh.leftEyePoints);
-    const rightEAR = LivenessEngine.eyeAspectRatio(mesh.rightEyePoints);
+    if (mesh.leftEyePoints.length < 14 || mesh.rightEyePoints.length < 14) return false;
+
+    // Left Eye 6-Point EAR Map
+    // p1 = 362 (index 0),  p2 = 385 (index 13), p3 = 387 (index 11)
+    // p4 = 263 (index 8),  p5 = 381 (index 2),  p6 = 374 (index 4)
+    const leftA = LivenessEngine.dist(mesh.leftEyePoints[13], mesh.leftEyePoints[4]);
+    const leftB = LivenessEngine.dist(mesh.leftEyePoints[11], mesh.leftEyePoints[2]);
+    const leftC = LivenessEngine.dist(mesh.leftEyePoints[0], mesh.leftEyePoints[8]);
+    const leftEAR = (leftA + leftB) / (2.0 * Math.max(leftC, 1));
+
+    // Right Eye 6-Point EAR Map
+    // p1 = 33 (index 0),   p2 = 160 (index 13), p3 = 158 (index 11)
+    // p4 = 133 (index 8),  p5 = 153 (index 5),  p6 = 145 (index 4)
+    const rightA = LivenessEngine.dist(mesh.rightEyePoints[13], mesh.rightEyePoints[4]);
+    const rightB = LivenessEngine.dist(mesh.rightEyePoints[11], mesh.rightEyePoints[5]);
+    const rightC = LivenessEngine.dist(mesh.rightEyePoints[0], mesh.rightEyePoints[8]);
+    const rightEAR = (rightA + rightB) / (2.0 * Math.max(rightC, 1));
+
     const avgEAR = (leftEAR + rightEAR) / 2;
 
     if (avgEAR < LIVENESS_CONFIG.EAR_BLINK_THRESHOLD) {
@@ -488,24 +504,15 @@ class LivenessEngineService {
     return false;
   }
 
-  // Eye Aspect Ratio using 6 landmarks per eye
-  private eyeAspectRatio(eyePoints: Point[]): number {
-    'worklet';
-    if (eyePoints.length < 6) return 0.3;
-    const A = LivenessEngine.dist(eyePoints[1], eyePoints[5]);
-    const B = LivenessEngine.dist(eyePoints[2], eyePoints[4]);
-    const C = LivenessEngine.dist(eyePoints[0], eyePoints[3]);
-    return (A + B) / (2.0 * C);
-  }
-
   private checkSmile(mesh: FaceMeshLandmarks): boolean {
     'worklet';
     if (mesh.lipPoints.length < 12) return false;
     // Ratio of mouth width to inter-eye distance
-    const mouthWidth = LivenessEngine.dist(mesh.lipPoints[0], mesh.lipPoints[6]);
+    // mouth corner left: lipPoints[0] (61), right: lipPoints[10] (291)
+    const mouthWidth = LivenessEngine.dist(mesh.lipPoints[0], mesh.lipPoints[10]);
     const eyeWidth = LivenessEngine.dist(
-      mesh.leftEyePoints[0],
-      mesh.rightEyePoints[3]
+      mesh.leftEyePoints[0], // LEFT_EYE inner corner (362, index 0)
+      mesh.rightEyePoints[8] // RIGHT_EYE inner corner (133, index 8)
     );
     const ratio = mouthWidth / Math.max(eyeWidth, 1);
 

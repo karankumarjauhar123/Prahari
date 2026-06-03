@@ -212,7 +212,7 @@ class DatabaseServiceClass {
         timestamp: row.timestamp,
         confidence: row.confidence,
         livenessScore: row.liveness_score,
-        location: row.location_lat ? { lat: row.location_lat, lng: row.location_lng } : undefined,
+        location: (row.location_lat !== null && row.location_lng !== null) ? { lat: row.location_lat, lng: row.location_lng } : undefined,
         synced: false,
         imageHash: row.image_hash,
       });
@@ -253,7 +253,7 @@ class DatabaseServiceClass {
         id: row.id, userId: row.user_id, userName: row.user_name,
         employeeId: row.employee_id, timestamp: row.timestamp,
         confidence: row.confidence, livenessScore: row.liveness_score,
-        location: row.location_lat ? { lat: row.location_lat, lng: row.location_lng } : undefined,
+        location: (row.location_lat !== null && row.location_lng !== null) ? { lat: row.location_lat, lng: row.location_lng } : undefined,
         synced: row.synced === 1, imageHash: row.image_hash,
       });
     }
