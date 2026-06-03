@@ -18,7 +18,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle, Path, Rect } from 'react-native-svg';
 import { FaceEngine } from '../services/FaceEngine';
 import { DatabaseService } from '../services/DatabaseService';
-import { UI_COLORS } from '../constants';
+import { UI_COLORS, MODEL_CONFIG, QUALITY_CONFIG } from '../constants';
+import {
+  wDetectFace, wCheckFaceQuality, wExtractEmbedding,
+} from '../utils/faceWorklets';
 import type { FaceEmbedding } from '../types';
 
 const CAPTURE_COUNT = 5; // Capture 5 embeddings and average for robustness
@@ -275,6 +278,7 @@ export const EnrollScreen: React.FC = () => {
     step: 'FORM', capturedCount: 0, embeddings: [],
   });
   const [isCameraLoaded, setIsCameraLoaded] = useState(false);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const isCapturingRef = useRef(false);
   const capturedEmbeddingsRef = useRef<number[][]>([]);
   const stepRef = useRef<EnrollState['step']>('FORM');
@@ -284,6 +288,7 @@ export const EnrollScreen: React.FC = () => {
     const init = async () => {
       try {
         await FaceEngine.initialize();
+        setModelsLoaded(true);
       } catch (err) {
         console.error('[EnrollScreen] FaceEngine initialize error:', err);
       }
@@ -379,65 +384,61 @@ export const EnrollScreen: React.FC = () => {
     }).start();
   };
 
-  // ─── Capture Logic (unchanged) ──────────────────────────────────────────
+  // ─── Capture Logic (sync worklet – no ArrayBuffer crosses to JS) ────────
 
-  const handleCaptureFrameData = useCallback(async (buffer: ArrayBuffer, width: number, height: number) => {
-    if (isCapturingRef.current) return;
+  const handleEmbeddingResult = useCallback((embedding: number[]) => {
     if (capturedEmbeddingsRef.current.length >= CAPTURE_COUNT) return;
-    isCapturingRef.current = true;
+    capturedEmbeddingsRef.current.push(embedding);
 
-    try {
-      const pixels = new Float32Array(new Uint8Array(buffer));
+    setState(prev => {
+      const next = {
+        ...prev,
+        capturedCount: capturedEmbeddingsRef.current.length,
+      };
+      stepRef.current = next.step;
+      return next;
+    });
 
-      const face = await FaceEngine.detectFace(pixels, width, height);
-      if (!face) { isCapturingRef.current = false; return; }
-
-      const quality = FaceEngine.checkFaceQuality(pixels, face, width, height);
-      if (!quality.pass) { isCapturingRef.current = false; return; }
-
-      const embedding = await FaceEngine.extractEmbedding(pixels, face, width);
-      capturedEmbeddingsRef.current.push(embedding);
-
-      setState(prev => {
-        const next = {
-          ...prev,
-          capturedCount: capturedEmbeddingsRef.current.length,
-        };
-        stepRef.current = next.step;
-        return next;
-      });
-
-      if (capturedEmbeddingsRef.current.length >= CAPTURE_COUNT) {
-        await finalizeEnrollment(capturedEmbeddingsRef.current);
-      }
-    } catch (e) {
-      console.error('[Enroll] Capture error:', e);
-    } finally {
-      // Delay between captures for diversity
-      setTimeout(() => { isCapturingRef.current = false; }, 800);
+    if (capturedEmbeddingsRef.current.length >= CAPTURE_COUNT) {
+      finalizeEnrollment(capturedEmbeddingsRef.current);
     }
   }, [name, employeeId]);
 
-  const handleCaptureFrameDataOnJS = Worklets.createRunOnJS(handleCaptureFrameData);
+  const handleEmbeddingOnJS = Worklets.createRunOnJS(handleEmbeddingResult);
+
+  // Get model references (JSI host objects — safe to capture in worklet closure)
+  const detModel = modelsLoaded ? FaceEngine.detectionModel : null;
+  const recModel = modelsLoaded ? FaceEngine.recognitionModel : null;
 
   const frameProcessor = useFrameProcessor((frame) => {
     'worklet';
-    // NOTE: Use stepRef instead of state.step — worklets run on a separate thread
-    // and cannot access React state directly
+    if (!detModel || !recModel) return;
     runAtTargetFps(2, () => {
       'worklet';
-      const width = frame.width;
-      const height = frame.height;
-      const buffer = frame.toArrayBuffer();
-      
-      // Copy the direct hardware memory buffer to a standard JS-allocated buffer
-      // to allow passing it safely across the worklet thread boundary.
-      const copy = new Uint8Array(buffer.byteLength);
-      copy.set(new Uint8Array(buffer));
-      
-      handleCaptureFrameDataOnJS(copy.buffer, width, height);
+      try {
+        const width = frame.width;
+        const height = frame.height;
+        const buffer = frame.toArrayBuffer();
+        const pixels = new Float32Array(new Uint8Array(buffer));
+
+        // Step 1: Detect face (synchronous — runs in worklet thread)
+        const face = wDetectFace(pixels, width, height, detModel);
+        if (!face) return;
+
+        // Step 2: Quality check (synchronous)
+        const quality = wCheckFaceQuality(pixels, face, width, height);
+        if (!quality.pass) return;
+
+        // Step 3: Extract embedding (synchronous)
+        const embedding = wExtractEmbedding(pixels, face, width, recModel);
+
+        // Only a number[] crosses to JS — fully supported as shared value
+        handleEmbeddingOnJS(embedding);
+      } catch (e) {
+        // Silently continue — don't crash app on frame processing error
+      }
     });
-  }, [handleCaptureFrameDataOnJS]);
+  }, [detModel, recModel, handleEmbeddingOnJS]);
 
   const finalizeEnrollment = async (embeddings: number[][]) => {
     setState(prev => {

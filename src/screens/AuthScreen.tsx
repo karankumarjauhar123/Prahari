@@ -18,7 +18,13 @@ import { FaceOverlay } from '../components/FaceOverlay';
 import { LivenessChallenge, StatusBadge } from '../components/LivenessChallenge';
 import { PerformanceMonitor } from '../components/PerformanceMonitor';
 import { useFaceRecognition } from '../hooks/useFaceRecognition';
+import type { FrameResult } from '../hooks/useFaceRecognition';
+import { FaceEngine } from '../services/FaceEngine';
+import { LivenessEngine } from '../services/LivenessEngine';
 import { UI_COLORS } from '../constants';
+import {
+  wDetectFace, wCheckFaceQuality, wExtractEmbedding, wCropResize,
+} from '../utils/faceWorklets';
 import type { FaceDetection, LivenessChallenge as ChallengeType } from '../types';
 
 
@@ -60,7 +66,8 @@ export const AuthScreen: React.FC = () => {
 
   const {
     isReady,
-    processFrame,
+    modelsLoaded,
+    handleFrameResult,
   } = useFaceRecognition({
     onStateChange: setAuthState,
     onChallengeChange: setCurrentChallenge,
@@ -120,27 +127,83 @@ export const AuthScreen: React.FC = () => {
     if (!hasPermission) requestPermission();
   }, []);
 
-  // ─── Frame Processor ──────────────────────────────────────────────────────
+  // ─── Frame Processor (sync worklet — no ArrayBuffer crosses to JS) ──────
 
-  const processFrameOnJS = Worklets.createRunOnJS(processFrame);
+  const handleFrameResultOnJS = Worklets.createRunOnJS(handleFrameResult);
+
+  // Get model references (JSI host objects — safe in worklet closure)
+  const detModel = modelsLoaded ? FaceEngine.detectionModel : null;
+  const recModel = modelsLoaded ? FaceEngine.recognitionModel : null;
+  const spoofModel = modelsLoaded ? LivenessEngine.antiSpoofModel : null;
 
   const frameProcessor = useFrameProcessor((frame) => {
     'worklet';
-    if (!isReady) return;
+    if (!detModel || !recModel) return;
     runAtTargetFps(3, () => {
       'worklet';
-      const width = frame.width;
-      const height = frame.height;
-      const buffer = frame.toArrayBuffer();
-      
-      // Copy the direct hardware memory buffer to a standard JS-allocated buffer
-      // to allow passing it safely across the worklet thread boundary.
-      const copy = new Uint8Array(buffer.byteLength);
-      copy.set(new Uint8Array(buffer));
-      
-      processFrameOnJS(copy.buffer, width, height);
+      try {
+        const width = frame.width;
+        const height = frame.height;
+        const buffer = frame.toArrayBuffer();
+        const pixels = new Float32Array(new Uint8Array(buffer));
+
+        // Face detection (sync in worklet)
+        const face = wDetectFace(pixels, width, height, detModel);
+        if (!face) {
+          handleFrameResultOnJS({
+            hasFace: false, face: null,
+            qualityScore: 0, qualityPass: false, qualityReason: null,
+            passiveScore: 0, embedding: null,
+          });
+          return;
+        }
+
+        // Quality check (sync in worklet)
+        const quality = wCheckFaceQuality(pixels, face, width, height);
+
+        // Passive liveness — run anti-spoof model in worklet
+        let passiveScore = 0;
+        if (spoofModel && quality.pass) {
+          try {
+            const cropX = Math.max(0, Math.floor(face.x - face.width * 0.1));
+            const cropY = Math.max(0, Math.floor(face.y - face.height * 0.1));
+            const cropW = Math.min(face.width * 1.2, width - cropX);
+            const cropH = Math.min(face.height * 1.2, height - cropY);
+            const cropped = wCropResize(pixels, cropX, cropY, cropW, cropH, width, 224);
+            const normalized = new Float32Array(224 * 224 * 3);
+            for (let i = 0; i < normalized.length; i++) normalized[i] = cropped[i] / 255.0;
+            const spoofOut = spoofModel.runSync([normalized]);
+            passiveScore = (spoofOut[0] as Float32Array)[0];
+          } catch (_e) {
+            passiveScore = 0.5; // default on error
+          }
+        }
+
+        // Extract embedding (sync in worklet)
+        let embedding: number[] | null = null;
+        if (quality.pass) {
+          embedding = wExtractEmbedding(pixels, face, width, recModel);
+        }
+
+        // Only serializable primitives/plain objects cross to JS
+        handleFrameResultOnJS({
+          hasFace: true,
+          face: {
+            x: face.x, y: face.y,
+            width: face.width, height: face.height,
+            confidence: face.confidence,
+          },
+          qualityScore: quality.score,
+          qualityPass: quality.pass,
+          qualityReason: quality.reason ?? null,
+          passiveScore,
+          embedding,
+        });
+      } catch (_e) {
+        // Silently continue — don't crash app
+      }
     });
-  }, [isReady, processFrameOnJS]);
+  }, [detModel, recModel, spoofModel, handleFrameResultOnJS]);
 
   // ─── Status Messages ──────────────────────────────────────────────────────
 

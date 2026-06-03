@@ -4,6 +4,7 @@
 // Stage 2 (Active): Randomized challenge-response (Blink/Smile/Turn)
 
 import { loadTensorflowModel, TensorflowModel } from 'react-native-fast-tflite';
+import { Worklets } from 'react-native-worklets-core';
 import { LIVENESS_CONFIG, MODEL_CONFIG } from '../constants';
 import type {
   LivenessChallenge,
@@ -14,24 +15,26 @@ import type {
 } from '../types';
 
 class LivenessEngineService {
-  private antiSpoofModel: TensorflowModel | null = null;
-  private faceMeshModel: TensorflowModel | null = null;
+  public antiSpoofModel: TensorflowModel | null = null;
+  public faceMeshModel: TensorflowModel | null = null;
 
   // Optical flow state
-  private prevFrame: Float32Array | null = null;
-  private prevFrameW = 0;
+  public prevFrame: Float32Array | null = null;
+  public prevFrameW = 0;
 
   // Active challenge state
-  private currentChallenges: LivenessChallenge[] = [];
-  private challengeIndex = 0;
-  private blinkFrameCount = 0;
-  private smileFrameCount = 0;
-  private headTurnDetected = false;
-  private challengeStartTime = 0;
-  private challengeCount = LIVENESS_CONFIG.CHALLENGE_COUNT;
+  public currentChallenges: LivenessChallenge[] = [];
+  public challengeIndex = 0;
+  public blinkFrameCount = 0;
+  public smileFrameCount = 0;
+  public headTurnDetected = false;
+  public challengeStartTime = 0;
+
+  // Shared value to synchronize challenge count between JS and Worklet threads
+  public challengeCountShared = Worklets.createSharedValue<number>(LIVENESS_CONFIG.CHALLENGE_COUNT);
 
   setChallengeCount(count: number) {
-    this.challengeCount = count;
+    this.challengeCountShared.value = count;
     console.log(`[LivenessEngine] Challenge count set to: ${count}`);
   }
 
@@ -47,7 +50,7 @@ class LivenessEngineService {
     console.log('[LivenessEngine] ✅ Loaded');
   }
 
-  // ─── Stage 1: Passive Liveness ────────────────────────────────────────────
+  // ─── Stage 1: Passive Liveness (Async version for JS context) ─────────────
 
   async runPassiveLiveness(
     pixels: Float32Array,
@@ -71,7 +74,6 @@ class LivenessEngineService {
     return passiveScore;
   }
 
-  // Mini anti-spoof CNN (binary: real=1, spoof=0)
   private async antiSpoofScore(
     pixels: Float32Array,
     face: FaceDetection,
@@ -95,19 +97,71 @@ class LivenessEngineService {
 
     const output = await this.antiSpoofModel.run([input]);
     const result = output[0] as Float32Array;
-    // output[0] = real_prob, output[1] = spoof_prob
-    return result[0]; // Higher = more likely real
+    return result[0];
+  }
+
+  // ─── Stage 1: Passive Liveness (Sync version for Worklet context) ──────────
+
+  runPassiveLivenessSync(
+    pixels: Float32Array,
+    face: FaceDetection,
+    frameWidth: number,
+    frameHeight: number
+  ): number {
+    'worklet';
+    const scores: number[] = [];
+
+    // A) Anti-spoof deep model score
+    scores.push(LivenessEngine.antiSpoofScoreSync(pixels, face, frameWidth, frameHeight));
+
+    // B) Optical flow — real face has natural micro-movements
+    scores.push(LivenessEngine.opticalFlowScore(pixels, frameWidth, frameHeight));
+
+    // C) LBP texture — screens/prints have uniform texture
+    scores.push(LivenessEngine.lbpTextureScore(pixels, face, frameWidth));
+
+    // Weighted average
+    const passiveScore = scores[0] * 0.5 + scores[1] * 0.3 + scores[2] * 0.2;
+    return passiveScore;
+  }
+
+  private antiSpoofScoreSync(
+    pixels: Float32Array,
+    face: FaceDetection,
+    frameWidth: number,
+    frameHeight: number
+  ): number {
+    'worklet';
+    if (!LivenessEngine.antiSpoofModel) return 0.5;
+
+    // Crop face with 20% padding
+    const pad = 0.2;
+    const x = Math.max(0, face.x - face.width * pad);
+    const y = Math.max(0, face.y - face.height * pad);
+    const w = Math.min(frameWidth - x, face.width * (1 + 2 * pad));
+    const h = Math.min(frameHeight - y, face.height * (1 + 2 * pad));
+
+    const crop = LivenessEngine.cropResize(pixels, x, y, w, h, frameWidth, 80);
+
+    // Normalize to [0,1]
+    const input = new Float32Array(80 * 80 * 3);
+    for (let i = 0; i < input.length; i++) input[i] = crop[i] / 255.0;
+
+    const output = LivenessEngine.antiSpoofModel.runSync([input]);
+    const result = output[0] as Float32Array;
+    return result[0];
   }
 
   // Optical flow using Lucas-Kanade approximation
-  private opticalFlowScore(
+  public opticalFlowScore(
     pixels: Float32Array,
     frameWidth: number,
     frameHeight: number
   ): number {
-    if (!this.prevFrame || this.prevFrameW !== frameWidth) {
-      this.prevFrame = new Float32Array(pixels);
-      this.prevFrameW = frameWidth;
+    'worklet';
+    if (!LivenessEngine.prevFrame || LivenessEngine.prevFrameW !== frameWidth) {
+      LivenessEngine.prevFrame = new Float32Array(pixels);
+      LivenessEngine.prevFrameW = frameWidth;
       return 0.5; // neutral on first frame
     }
 
@@ -118,12 +172,12 @@ class LivenessEngineService {
 
     for (let i = 0; i < pixels.length - 2; i += step * 3) {
       const currGray = pixels[i] * 0.299 + pixels[i+1] * 0.587 + pixels[i+2] * 0.114;
-      const prevGray = this.prevFrame[i] * 0.299 + this.prevFrame[i+1] * 0.587 + this.prevFrame[i+2] * 0.114;
+      const prevGray = LivenessEngine.prevFrame[i] * 0.299 + LivenessEngine.prevFrame[i+1] * 0.587 + LivenessEngine.prevFrame[i+2] * 0.114;
       totalMotion += Math.abs(currGray - prevGray);
       count++;
     }
 
-    this.prevFrame = new Float32Array(pixels);
+    LivenessEngine.prevFrame = new Float32Array(pixels);
     const avgMotion = totalMotion / (count * 255);
 
     // Real face: small but non-zero motion (0.05–0.3 range)
@@ -135,11 +189,12 @@ class LivenessEngineService {
   }
 
   // Local Binary Pattern texture analysis
-  private lbpTextureScore(
+  public lbpTextureScore(
     pixels: Float32Array,
     face: FaceDetection,
     frameWidth: number
   ): number {
+    'worklet';
     const frameHeight = pixels.length / (frameWidth * 3);
     const x = Math.max(1, Math.floor(face.x));
     const y = Math.max(1, Math.floor(face.y));
@@ -158,14 +213,14 @@ class LivenessEngineService {
 
         // 8 neighbors (circular)
         const neighbors = [
-          this.getGray(pixels, px-1, py-1, frameWidth),
-          this.getGray(pixels, px,   py-1, frameWidth),
-          this.getGray(pixels, px+1, py-1, frameWidth),
-          this.getGray(pixels, px+1, py,   frameWidth),
-          this.getGray(pixels, px+1, py+1, frameWidth),
-          this.getGray(pixels, px,   py+1, frameWidth),
-          this.getGray(pixels, px-1, py+1, frameWidth),
-          this.getGray(pixels, px-1, py,   frameWidth),
+          LivenessEngine.getGray(pixels, px-1, py-1, frameWidth),
+          LivenessEngine.getGray(pixels, px,   py-1, frameWidth),
+          LivenessEngine.getGray(pixels, px+1, py-1, frameWidth),
+          LivenessEngine.getGray(pixels, px+1, py,   frameWidth),
+          LivenessEngine.getGray(pixels, px+1, py+1, frameWidth),
+          LivenessEngine.getGray(pixels, px,   py+1, frameWidth),
+          LivenessEngine.getGray(pixels, px-1, py+1, frameWidth),
+          LivenessEngine.getGray(pixels, px-1, py,   frameWidth),
         ];
 
         let lbp = 0;
@@ -193,6 +248,7 @@ class LivenessEngineService {
   }
 
   private getGray(pixels: Float32Array, x: number, y: number, w: number): number {
+    'worklet';
     const idx = (y * w + x) * 3;
     return pixels[idx] * 0.299 + pixels[idx+1] * 0.587 + pixels[idx+2] * 0.114;
   }
@@ -200,32 +256,33 @@ class LivenessEngineService {
   // ─── Stage 2: Active Challenge ────────────────────────────────────────────
 
   startChallenge(seed?: number): LivenessChallenge[] {
+    'worklet';
     // Seed-based randomization ensures challenges are unpredictable
     const s = seed ?? (Date.now() % 10000);
     const all: LivenessChallenge[] = ['BLINK', 'SMILE', 'TURN_LEFT', 'TURN_RIGHT', 'NOD'];
-    const shuffled = this.seededShuffle(all, s);
-    this.currentChallenges = shuffled.slice(0, this.challengeCount);
-    this.challengeIndex = 0;
-    this.blinkFrameCount = 0;
-    this.smileFrameCount = 0;
-    this.headTurnDetected = false;
-    this.challengeStartTime = Date.now();
-    return this.currentChallenges;
+    const shuffled = LivenessEngine.seededShuffle(all, s);
+    LivenessEngine.currentChallenges = shuffled.slice(0, LivenessEngine.challengeCountShared.value);
+    LivenessEngine.challengeIndex = 0;
+    LivenessEngine.blinkFrameCount = 0;
+    LivenessEngine.smileFrameCount = 0;
+    LivenessEngine.headTurnDetected = false;
+    LivenessEngine.challengeStartTime = Date.now();
+    return LivenessEngine.currentChallenges;
   }
 
   getCurrentChallenge(): LivenessChallenge | null {
-    if (this.challengeIndex >= this.currentChallenges.length) return null;
-    return this.currentChallenges[this.challengeIndex];
+    'worklet';
+    if (LivenessEngine.challengeIndex >= LivenessEngine.currentChallenges.length) return null;
+    return LivenessEngine.currentChallenges[LivenessEngine.challengeIndex];
   }
 
-  // Run face mesh inference and check challenge progress
+  // Check challenge progress (Async version for JS context)
   async checkChallenge(
     pixels: Float32Array,
     face: FaceDetection,
     frameWidth: number,
     frameHeight: number
   ): Promise<{ completed: boolean; timedOut: boolean; currentChallenge: LivenessChallenge | null }> {
-
     const elapsed = Date.now() - this.challengeStartTime;
     if (elapsed > LIVENESS_CONFIG.CHALLENGE_TIMEOUT_MS) {
       return { completed: false, timedOut: true, currentChallenge: null };
@@ -273,80 +330,6 @@ class LivenessEngineService {
     };
   }
 
-  private checkBlink(mesh: FaceMeshLandmarks): boolean {
-    const leftEAR = this.eyeAspectRatio(mesh.leftEyePoints);
-    const rightEAR = this.eyeAspectRatio(mesh.rightEyePoints);
-    const avgEAR = (leftEAR + rightEAR) / 2;
-
-    if (avgEAR < LIVENESS_CONFIG.EAR_BLINK_THRESHOLD) {
-      this.blinkFrameCount++;
-    } else {
-      if (this.blinkFrameCount >= LIVENESS_CONFIG.EAR_CONSECUTIVE_FRAMES) {
-        return true; // blink completed
-      }
-      this.blinkFrameCount = 0;
-    }
-    return false;
-  }
-
-  // Eye Aspect Ratio using 6 landmarks per eye
-  private eyeAspectRatio(eyePoints: Point[]): number {
-    if (eyePoints.length < 6) return 0.3;
-    const A = this.dist(eyePoints[1], eyePoints[5]);
-    const B = this.dist(eyePoints[2], eyePoints[4]);
-    const C = this.dist(eyePoints[0], eyePoints[3]);
-    return (A + B) / (2.0 * C);
-  }
-
-  private checkSmile(mesh: FaceMeshLandmarks): boolean {
-    if (mesh.lipPoints.length < 12) return false;
-    // Ratio of mouth width to inter-eye distance
-    const mouthWidth = this.dist(mesh.lipPoints[0], mesh.lipPoints[6]);
-    const eyeWidth = this.dist(
-      mesh.leftEyePoints[0],
-      mesh.rightEyePoints[3]
-    );
-    const ratio = mouthWidth / Math.max(eyeWidth, 1);
-
-    if (ratio > LIVENESS_CONFIG.SMILE_THRESHOLD) {
-      this.smileFrameCount++;
-      if (this.smileFrameCount >= 3) return true;
-    } else {
-      this.smileFrameCount = 0;
-    }
-    return false;
-  }
-
-  private checkHeadTurn(mesh: FaceMeshLandmarks, direction: 'LEFT' | 'RIGHT'): boolean {
-    // Estimate yaw using nose tip relative to face midpoint
-    const noseTip = mesh.nosePoints[0];
-    const leftEyeCenter = this.centroid(mesh.leftEyePoints);
-    const rightEyeCenter = this.centroid(mesh.rightEyePoints);
-    const faceMidX = (leftEyeCenter.x + rightEyeCenter.x) / 2;
-    const faceWidth = Math.abs(rightEyeCenter.x - leftEyeCenter.x);
-
-    // Normalized nose offset: >0 = face turned right, <0 = turned left
-    const noseOffset = (noseTip.x - faceMidX) / Math.max(faceWidth, 1);
-    const yawDegrees = noseOffset * 90; // approximate mapping
-
-    const threshold = LIVENESS_CONFIG.HEAD_TURN_ANGLE / 90;
-    if (direction === 'RIGHT' && noseOffset > threshold) return true;
-    if (direction === 'LEFT' && noseOffset < -threshold) return true;
-    return false;
-  }
-
-  private checkNod(mesh: FaceMeshLandmarks): boolean {
-    if (mesh.nosePoints.length < 1) return false;
-    // Simplified: check if nose Y moves significantly relative to eye Y
-    const noseTip = mesh.nosePoints[0];
-    const leftEye = this.centroid(mesh.leftEyePoints);
-    const noseToEyeDist = noseTip.y - leftEye.y;
-    // When nodding down, nose-to-eye vertical distance increases
-    return noseToEyeDist > 50; // threshold tuned empirically
-  }
-
-  // ─── Face Mesh Inference ──────────────────────────────────────────────────
-
   private async getFaceMesh(
     pixels: Float32Array,
     face: FaceDetection,
@@ -364,7 +347,6 @@ class LivenessEngineService {
     const outputs = await this.faceMeshModel.run([input]);
     const landmarks = outputs[0] as Float32Array;
 
-    // Parse 468 landmarks [x, y, z] × 468
     const points: Point[] = [];
     for (let i = 0; i < 468; i++) {
       points.push({
@@ -373,7 +355,6 @@ class LivenessEngineService {
       });
     }
 
-    // MediaPipe face mesh indices for key regions
     const LEFT_EYE = [362,382,381,380,374,373,390,249,263,466,388,387,386,385,384,398];
     const RIGHT_EYE = [33,7,163,144,145,153,154,155,133,173,157,158,159,160,161,246];
     const LIPS = [61,185,40,39,37,0,267,269,270,409,291,146,91,181,84,17,314,405,321,375];
@@ -388,7 +369,178 @@ class LivenessEngineService {
     };
   }
 
-  // ─── Full Liveness Assessment ──────────────────────────────────────────────
+  // Check challenge progress (Sync version for Worklet context)
+  checkChallengeSync(
+    pixels: Float32Array,
+    face: FaceDetection,
+    frameWidth: number,
+    frameHeight: number
+  ): { completed: boolean; timedOut: boolean; currentChallenge: LivenessChallenge | null } {
+    'worklet';
+    const elapsed = Date.now() - LivenessEngine.challengeStartTime;
+    if (elapsed > LIVENESS_CONFIG.CHALLENGE_TIMEOUT_MS) {
+      return { completed: false, timedOut: true, currentChallenge: null };
+    }
+
+    const mesh = LivenessEngine.getFaceMeshSync(pixels, face, frameWidth, frameHeight);
+    if (!mesh) return { completed: false, timedOut: false, currentChallenge: LivenessEngine.getCurrentChallenge() };
+
+    const challenge = LivenessEngine.getCurrentChallenge();
+    if (!challenge) return { completed: true, timedOut: false, currentChallenge: null };
+
+    let challengePassed = false;
+
+    switch (challenge) {
+      case 'BLINK':
+        challengePassed = LivenessEngine.checkBlink(mesh);
+        break;
+      case 'SMILE':
+        challengePassed = LivenessEngine.checkSmile(mesh);
+        break;
+      case 'TURN_LEFT':
+        challengePassed = LivenessEngine.checkHeadTurn(mesh, 'LEFT');
+        break;
+      case 'TURN_RIGHT':
+        challengePassed = LivenessEngine.checkHeadTurn(mesh, 'RIGHT');
+        break;
+      case 'NOD':
+        challengePassed = LivenessEngine.checkNod(mesh);
+        break;
+    }
+
+    if (challengePassed) {
+      LivenessEngine.challengeIndex++;
+      LivenessEngine.blinkFrameCount = 0;
+      LivenessEngine.smileFrameCount = 0;
+      LivenessEngine.headTurnDetected = false;
+      LivenessEngine.challengeStartTime = Date.now(); // reset timer for next challenge
+    }
+
+    const allDone = LivenessEngine.challengeIndex >= LivenessEngine.currentChallenges.length;
+    return {
+      completed: allDone,
+      timedOut: false,
+      currentChallenge: LivenessEngine.getCurrentChallenge(),
+    };
+  }
+
+  private getFaceMeshSync(
+    pixels: Float32Array,
+    face: FaceDetection,
+    frameWidth: number,
+    frameHeight: number
+  ): FaceMeshLandmarks | null {
+    'worklet';
+    if (!LivenessEngine.faceMeshModel) return null;
+
+    const crop = LivenessEngine.cropResize(
+      pixels, face.x, face.y, face.width, face.height, frameWidth, 192
+    );
+    const input = new Float32Array(192 * 192 * 3);
+    for (let i = 0; i < input.length; i++) input[i] = crop[i] / 255.0;
+
+    const outputs = LivenessEngine.faceMeshModel.runSync([input]);
+    const landmarks = outputs[0] as Float32Array;
+
+    const points: Point[] = [];
+    for (let i = 0; i < 468; i++) {
+      points.push({
+        x: landmarks[i * 3] * face.width + face.x,
+        y: landmarks[i * 3 + 1] * face.height + face.y,
+      });
+    }
+
+    const LEFT_EYE = [362,382,381,380,374,373,390,249,263,466,388,387,386,385,384,398];
+    const RIGHT_EYE = [33,7,163,144,145,153,154,155,133,173,157,158,159,160,161,246];
+    const LIPS = [61,185,40,39,37,0,267,269,270,409,291,146,91,181,84,17,314,405,321,375];
+    const NOSE_TIP = [1, 4, 5];
+
+    return {
+      points,
+      leftEyePoints: LEFT_EYE.map(i => points[i]),
+      rightEyePoints: RIGHT_EYE.map(i => points[i]),
+      lipPoints: LIPS.map(i => points[i]),
+      nosePoints: NOSE_TIP.map(i => points[i]),
+    };
+  }
+
+  private checkBlink(mesh: FaceMeshLandmarks): boolean {
+    'worklet';
+    const leftEAR = LivenessEngine.eyeAspectRatio(mesh.leftEyePoints);
+    const rightEAR = LivenessEngine.eyeAspectRatio(mesh.rightEyePoints);
+    const avgEAR = (leftEAR + rightEAR) / 2;
+
+    if (avgEAR < LIVENESS_CONFIG.EAR_BLINK_THRESHOLD) {
+      LivenessEngine.blinkFrameCount++;
+    } else {
+      if (LivenessEngine.blinkFrameCount >= LIVENESS_CONFIG.EAR_CONSECUTIVE_FRAMES) {
+        return true; // blink completed
+      }
+      LivenessEngine.blinkFrameCount = 0;
+    }
+    return false;
+  }
+
+  // Eye Aspect Ratio using 6 landmarks per eye
+  private eyeAspectRatio(eyePoints: Point[]): number {
+    'worklet';
+    if (eyePoints.length < 6) return 0.3;
+    const A = LivenessEngine.dist(eyePoints[1], eyePoints[5]);
+    const B = LivenessEngine.dist(eyePoints[2], eyePoints[4]);
+    const C = LivenessEngine.dist(eyePoints[0], eyePoints[3]);
+    return (A + B) / (2.0 * C);
+  }
+
+  private checkSmile(mesh: FaceMeshLandmarks): boolean {
+    'worklet';
+    if (mesh.lipPoints.length < 12) return false;
+    // Ratio of mouth width to inter-eye distance
+    const mouthWidth = LivenessEngine.dist(mesh.lipPoints[0], mesh.lipPoints[6]);
+    const eyeWidth = LivenessEngine.dist(
+      mesh.leftEyePoints[0],
+      mesh.rightEyePoints[3]
+    );
+    const ratio = mouthWidth / Math.max(eyeWidth, 1);
+
+    if (ratio > LIVENESS_CONFIG.SMILE_THRESHOLD) {
+      LivenessEngine.smileFrameCount++;
+      if (LivenessEngine.smileFrameCount >= 3) return true;
+    } else {
+      LivenessEngine.smileFrameCount = 0;
+    }
+    return false;
+  }
+
+  private checkHeadTurn(mesh: FaceMeshLandmarks, direction: 'LEFT' | 'RIGHT'): boolean {
+    'worklet';
+    // Estimate yaw using nose tip relative to face midpoint
+    const noseTip = mesh.nosePoints[0];
+    const leftEyeCenter = LivenessEngine.centroid(mesh.leftEyePoints);
+    const rightEyeCenter = LivenessEngine.centroid(mesh.rightEyePoints);
+    const faceMidX = (leftEyeCenter.x + rightEyeCenter.x) / 2;
+    const faceWidth = Math.abs(rightEyeCenter.x - leftEyeCenter.x);
+
+    // Normalized nose offset: >0 = face turned right, <0 = turned left
+    const noseOffset = (noseTip.x - faceMidX) / Math.max(faceWidth, 1);
+
+    const threshold = LIVENESS_CONFIG.HEAD_TURN_ANGLE / 90;
+    if (direction === 'RIGHT' && noseOffset > threshold) return true;
+    if (direction === 'LEFT' && noseOffset < -threshold) return true;
+    return false;
+  }
+
+  private checkNod(mesh: FaceMeshLandmarks): boolean {
+    'worklet';
+    if (mesh.nosePoints.length < 1) return false;
+    // Simplified: check if nose Y moves significantly relative to eye Y
+    const noseTip = mesh.nosePoints[0];
+    const leftEye = LivenessEngine.centroid(mesh.leftEyePoints);
+    const noseToEyeDist = noseTip.y - leftEye.y;
+    // When nodding down, nose-to-eye vertical distance increases
+    return noseToEyeDist > 50; // threshold tuned empirically
+  }
+
+  // ─── Full Liveness Assessment (Async version for JS context) ─────────────
 
   async assessLiveness(
     pixels: Float32Array,
@@ -411,13 +563,39 @@ class LivenessEngineService {
     };
   }
 
+  // ─── Full Liveness Assessment (Sync version for Worklet context) ──────────
+
+  assessLivenessSync(
+    pixels: Float32Array,
+    face: FaceDetection,
+    frameWidth: number,
+    frameHeight: number,
+    activeCompleted: boolean
+  ): LivenessResult {
+    'worklet';
+    const passiveScore = LivenessEngine.runPassiveLivenessSync(pixels, face, frameWidth, frameHeight);
+    const spoofDetected = passiveScore < MODEL_CONFIG.SPOOF_THRESHOLD;
+    const activeScore = activeCompleted ? 1.0 : 0.0;
+    const totalScore = passiveScore * 0.6 + activeScore * 0.4;
+
+    return {
+      passed: !spoofDetected && activeCompleted && totalScore > 0.65,
+      score: totalScore,
+      passiveScore,
+      activeScore,
+      spoofDetected,
+    };
+  }
+
   // ─── Helper Utilities ─────────────────────────────────────────────────────
 
   private dist(a: Point, b: Point): number {
+    'worklet';
     return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
   }
 
   private centroid(points: Point[]): Point {
+    'worklet';
     return {
       x: points.reduce((s, p) => s + p.x, 0) / points.length,
       y: points.reduce((s, p) => s + p.y, 0) / points.length,
@@ -428,6 +606,7 @@ class LivenessEngineService {
     pixels: Float32Array, x: number, y: number,
     w: number, h: number, frameWidth: number, targetSize: number
   ): Float32Array {
+    'worklet';
     const frameHeight = pixels.length / (frameWidth * 3);
     const output = new Float32Array(targetSize * targetSize * 3);
     const scaleX = w / targetSize, scaleY = h / targetSize;
@@ -455,6 +634,7 @@ class LivenessEngineService {
   }
 
   private seededShuffle<T>(arr: T[], seed: number): T[] {
+    'worklet';
     const copy = [...arr];
     let s = seed;
     for (let i = copy.length - 1; i > 0; i--) {
@@ -466,7 +646,8 @@ class LivenessEngineService {
   }
 
   resetOpticalFlow(): void {
-    this.prevFrame = null;
+    'worklet';
+    LivenessEngine.prevFrame = null;
   }
 }
 
