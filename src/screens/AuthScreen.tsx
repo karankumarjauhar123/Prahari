@@ -582,9 +582,8 @@ const CameraFeed: React.FC<{
       isActive={isActive}
       frameProcessor={frameProcessor}
       photo={false}
-      video={false}
+      video={true}
       audio={false}
-      fps={8}
       pixelFormat="rgb"
     />
   );

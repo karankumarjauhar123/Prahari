@@ -485,9 +485,17 @@ export const EnrollScreen: React.FC = () => {
     
     // Check and request camera permission dynamically
     if (!hasPermission) {
-      const granted = await requestPermission();
-      if (!granted) {
-        Alert.alert('Permission Denied', 'Camera permission is required to enroll a user.');
+      try {
+        const granted = await requestPermission();
+        if (!granted) {
+          Alert.alert('Permission Denied', 'Camera permission is required to enroll a user. Please grant it in Settings.');
+          return;
+        }
+        // Small delay to let the permission state propagate through the system
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } catch (err) {
+        console.error('[EnrollScreen] Permission request error:', err);
+        Alert.alert('Error', 'Could not request camera permission.');
         return;
       }
     }
@@ -627,6 +635,7 @@ export const EnrollScreen: React.FC = () => {
           frameProcessor={frameProcessor}
           onCancel={onCancel}
           onCameraLoaded={setIsCameraLoaded}
+          hasPermission={hasPermission}
         />
 
         {/* Dark overlay - only display when camera is loaded */}
@@ -1290,29 +1299,38 @@ const EnrollCameraFeed: React.FC<{
   frameProcessor: any;
   onCancel: () => void;
   onCameraLoaded: (loaded: boolean) => void;
-}> = ({ isActive, frameProcessor, onCancel, onCameraLoaded }) => {
+  hasPermission: boolean;
+}> = ({ isActive, frameProcessor, onCancel, onCameraLoaded, hasPermission }) => {
   const device = useCameraDevice('front');
   const [timedOut, setTimedOut] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!device) {
+    if (!device || !hasPermission) {
       onCameraLoaded(false);
       const timer = setTimeout(() => setTimedOut(true), 5000);
       return () => clearTimeout(timer);
     } else {
       setTimedOut(false);
+      setCameraError(null);
       onCameraLoaded(true);
     }
-  }, [device, onCameraLoaded]);
+  }, [device, hasPermission, onCameraLoaded]);
 
-  if (!device) {
+  if (!hasPermission || !device) {
     return (
       <View style={[StyleSheet.absoluteFill, { backgroundColor: UI_COLORS.BACKGROUND, alignItems: 'center', justifyContent: 'center' }]}>
         {timedOut ? (
           <>
             <Text style={{ fontSize: 48, marginBottom: 16 }}>📷</Text>
-            <Text style={{ color: UI_COLORS.TEXT_PRIMARY, fontSize: 16, fontWeight: '700' }}>No front camera found</Text>
-            <Text style={{ color: UI_COLORS.TEXT_SECONDARY, fontSize: 13, marginTop: 6, marginBottom: 20, textAlign: 'center', paddingHorizontal: 32 }}>Please check your camera settings and try again.</Text>
+            <Text style={{ color: UI_COLORS.TEXT_PRIMARY, fontSize: 16, fontWeight: '700' }}>
+              {!hasPermission ? 'Camera permission required' : 'No front camera found'}
+            </Text>
+            <Text style={{ color: UI_COLORS.TEXT_SECONDARY, fontSize: 13, marginTop: 6, marginBottom: 20, textAlign: 'center', paddingHorizontal: 32 }}>
+              {!hasPermission
+                ? 'Please grant camera permission in your device settings and try again.'
+                : 'Please check your camera settings and try again.'}
+            </Text>
           </>
         ) : (
           <>
@@ -1343,8 +1361,18 @@ const EnrollCameraFeed: React.FC<{
       device={device}
       isActive={isActive}
       frameProcessor={frameProcessor}
-      fps={5}
+      photo={false}
+      video={true}
+      audio={false}
       pixelFormat="rgb"
+      onError={(error) => {
+        console.error('[EnrollCameraFeed] Camera error:', error);
+        setCameraError(error.message);
+      }}
+      onInitialized={() => {
+        console.log('[EnrollCameraFeed] Camera initialized successfully');
+        onCameraLoaded(true);
+      }}
     />
   );
 };
