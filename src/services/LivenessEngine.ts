@@ -22,13 +22,13 @@ class LivenessEngineService {
   public prevFrame: Float32Array | null = null;
   public prevFrameW = 0;
 
-  // Active challenge state
-  public currentChallenges: LivenessChallenge[] = [];
-  public challengeIndex = 0;
-  public blinkFrameCount = 0;
-  public smileFrameCount = 0;
-  public headTurnDetected = false;
-  public challengeStartTime = 0;
+  // Active challenge state (Shared values to synchronize between JS and Worklet threads)
+  public currentChallengesShared = Worklets.createSharedValue<LivenessChallenge[]>([]);
+  public challengeIndexShared = Worklets.createSharedValue<number>(0);
+  public blinkFrameCountShared = Worklets.createSharedValue<number>(0);
+  public smileFrameCountShared = Worklets.createSharedValue<number>(0);
+  public headTurnDetectedShared = Worklets.createSharedValue<boolean>(false);
+  public challengeStartTimeShared = Worklets.createSharedValue<number>(0);
 
   // Shared values to synchronize state between JS and Worklet threads
   public challengeCountShared = Worklets.createSharedValue<number>(LIVENESS_CONFIG.CHALLENGE_COUNT);
@@ -268,19 +268,19 @@ class LivenessEngineService {
     const s = seed ?? (Date.now() % 10000);
     const all: LivenessChallenge[] = ['BLINK', 'SMILE', 'TURN_LEFT', 'TURN_RIGHT', 'NOD'];
     const shuffled = LivenessEngine.seededShuffle(all, s);
-    LivenessEngine.currentChallenges = shuffled.slice(0, LivenessEngine.challengeCountShared.value);
-    LivenessEngine.challengeIndex = 0;
-    LivenessEngine.blinkFrameCount = 0;
-    LivenessEngine.smileFrameCount = 0;
-    LivenessEngine.headTurnDetected = false;
-    LivenessEngine.challengeStartTime = Date.now();
-    return LivenessEngine.currentChallenges;
+    LivenessEngine.currentChallengesShared.value = shuffled.slice(0, LivenessEngine.challengeCountShared.value);
+    LivenessEngine.challengeIndexShared.value = 0;
+    LivenessEngine.blinkFrameCountShared.value = 0;
+    LivenessEngine.smileFrameCountShared.value = 0;
+    LivenessEngine.headTurnDetectedShared.value = false;
+    LivenessEngine.challengeStartTimeShared.value = Date.now();
+    return LivenessEngine.currentChallengesShared.value;
   }
 
   getCurrentChallenge(): LivenessChallenge | null {
     'worklet';
-    if (LivenessEngine.challengeIndex >= LivenessEngine.currentChallenges.length) return null;
-    return LivenessEngine.currentChallenges[LivenessEngine.challengeIndex];
+    if (LivenessEngine.challengeIndexShared.value >= LivenessEngine.currentChallengesShared.value.length) return null;
+    return LivenessEngine.currentChallengesShared.value[LivenessEngine.challengeIndexShared.value];
   }
 
   // Check challenge progress (Async version for JS context)
@@ -290,7 +290,7 @@ class LivenessEngineService {
     frameWidth: number,
     frameHeight: number
   ): Promise<{ completed: boolean; timedOut: boolean; currentChallenge: LivenessChallenge | null }> {
-    const elapsed = Date.now() - this.challengeStartTime;
+    const elapsed = Date.now() - this.challengeStartTimeShared.value;
     if (elapsed > LIVENESS_CONFIG.CHALLENGE_TIMEOUT_MS) {
       return { completed: false, timedOut: true, currentChallenge: null };
     }
@@ -322,14 +322,14 @@ class LivenessEngineService {
     }
 
     if (challengePassed) {
-      this.challengeIndex++;
-      this.blinkFrameCount = 0;
-      this.smileFrameCount = 0;
-      this.headTurnDetected = false;
-      this.challengeStartTime = Date.now(); // reset timer for next challenge
+      this.challengeIndexShared.value++;
+      this.blinkFrameCountShared.value = 0;
+      this.smileFrameCountShared.value = 0;
+      this.headTurnDetectedShared.value = false;
+      this.challengeStartTimeShared.value = Date.now(); // reset timer for next challenge
     }
 
-    const allDone = this.challengeIndex >= this.currentChallenges.length;
+    const allDone = this.challengeIndexShared.value >= this.currentChallengesShared.value.length;
     return {
       completed: allDone,
       timedOut: false,
@@ -384,7 +384,7 @@ class LivenessEngineService {
     frameHeight: number
   ): { completed: boolean; timedOut: boolean; currentChallenge: LivenessChallenge | null } {
     'worklet';
-    const elapsed = Date.now() - LivenessEngine.challengeStartTime;
+    const elapsed = Date.now() - LivenessEngine.challengeStartTimeShared.value;
     if (elapsed > LIVENESS_CONFIG.CHALLENGE_TIMEOUT_MS) {
       return { completed: false, timedOut: true, currentChallenge: null };
     }
@@ -416,14 +416,14 @@ class LivenessEngineService {
     }
 
     if (challengePassed) {
-      LivenessEngine.challengeIndex++;
-      LivenessEngine.blinkFrameCount = 0;
-      LivenessEngine.smileFrameCount = 0;
-      LivenessEngine.headTurnDetected = false;
-      LivenessEngine.challengeStartTime = Date.now(); // reset timer for next challenge
+      LivenessEngine.challengeIndexShared.value++;
+      LivenessEngine.blinkFrameCountShared.value = 0;
+      LivenessEngine.smileFrameCountShared.value = 0;
+      LivenessEngine.headTurnDetectedShared.value = false;
+      LivenessEngine.challengeStartTimeShared.value = Date.now(); // reset timer for next challenge
     }
 
-    const allDone = LivenessEngine.challengeIndex >= LivenessEngine.currentChallenges.length;
+    const allDone = LivenessEngine.challengeIndexShared.value >= LivenessEngine.currentChallengesShared.value.length;
     return {
       completed: allDone,
       timedOut: false,
@@ -494,12 +494,12 @@ class LivenessEngineService {
     const avgEAR = (leftEAR + rightEAR) / 2;
 
     if (avgEAR < LIVENESS_CONFIG.EAR_BLINK_THRESHOLD) {
-      LivenessEngine.blinkFrameCount++;
+      LivenessEngine.blinkFrameCountShared.value++;
     } else {
-      if (LivenessEngine.blinkFrameCount >= LIVENESS_CONFIG.EAR_CONSECUTIVE_FRAMES) {
+      if (LivenessEngine.blinkFrameCountShared.value >= LIVENESS_CONFIG.EAR_CONSECUTIVE_FRAMES) {
         return true; // blink completed
       }
-      LivenessEngine.blinkFrameCount = 0;
+      LivenessEngine.blinkFrameCountShared.value = 0;
     }
     return false;
   }
@@ -517,10 +517,10 @@ class LivenessEngineService {
     const ratio = mouthWidth / Math.max(eyeWidth, 1);
 
     if (ratio > LIVENESS_CONFIG.SMILE_THRESHOLD) {
-      LivenessEngine.smileFrameCount++;
-      if (LivenessEngine.smileFrameCount >= 3) return true;
+      LivenessEngine.smileFrameCountShared.value++;
+      if (LivenessEngine.smileFrameCountShared.value >= 3) return true;
     } else {
-      LivenessEngine.smileFrameCount = 0;
+      LivenessEngine.smileFrameCountShared.value = 0;
     }
     return false;
   }
