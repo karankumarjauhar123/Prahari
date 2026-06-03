@@ -225,22 +225,15 @@ class LivenessEngineService {
         const centerIdx = (py * frameWidth + px) * 3;
         const center = pixels[centerIdx] * 0.299 + pixels[centerIdx+1] * 0.587 + pixels[centerIdx+2] * 0.114;
 
-        // 8 neighbors (circular)
-        const neighbors = [
-          LivenessEngine.getGray(pixels, px-1, py-1, frameWidth),
-          LivenessEngine.getGray(pixels, px,   py-1, frameWidth),
-          LivenessEngine.getGray(pixels, px+1, py-1, frameWidth),
-          LivenessEngine.getGray(pixels, px+1, py,   frameWidth),
-          LivenessEngine.getGray(pixels, px+1, py+1, frameWidth),
-          LivenessEngine.getGray(pixels, px,   py+1, frameWidth),
-          LivenessEngine.getGray(pixels, px-1, py+1, frameWidth),
-          LivenessEngine.getGray(pixels, px-1, py,   frameWidth),
-        ];
-
         let lbp = 0;
-        for (let n = 0; n < 8; n++) {
-          if (neighbors[n] >= center) lbp |= (1 << n);
-        }
+        if (LivenessEngine.getGray(pixels, px-1, py-1, frameWidth) >= center) lbp |= (1 << 0);
+        if (LivenessEngine.getGray(pixels, px,   py-1, frameWidth) >= center) lbp |= (1 << 1);
+        if (LivenessEngine.getGray(pixels, px+1, py-1, frameWidth) >= center) lbp |= (1 << 2);
+        if (LivenessEngine.getGray(pixels, px+1, py,   frameWidth) >= center) lbp |= (1 << 3);
+        if (LivenessEngine.getGray(pixels, px+1, py+1, frameWidth) >= center) lbp |= (1 << 4);
+        if (LivenessEngine.getGray(pixels, px,   py+1, frameWidth) >= center) lbp |= (1 << 5);
+        if (LivenessEngine.getGray(pixels, px-1, py+1, frameWidth) >= center) lbp |= (1 << 6);
+        if (LivenessEngine.getGray(pixels, px-1, py,   frameWidth) >= center) lbp |= (1 << 7);
         hist[lbp]++;
         totalPixels++;
       }
@@ -546,12 +539,15 @@ class LivenessEngineService {
   private checkNod(mesh: FaceMeshLandmarks): boolean {
     'worklet';
     if (mesh.nosePoints.length < 1) return false;
-    // Simplified: check if nose Y moves significantly relative to eye Y
     const noseTip = mesh.nosePoints[0];
     const leftEye = LivenessEngine.centroid(mesh.leftEyePoints);
+    const rightEye = LivenessEngine.centroid(mesh.rightEyePoints);
+    const faceWidth = Math.abs(rightEye.x - leftEye.x);
+    
     const noseToEyeDist = noseTip.y - leftEye.y;
-    // When nodding down, nose-to-eye vertical distance increases
-    return noseToEyeDist > 50; // threshold tuned empirically
+    // Normalize nose-to-eye vertical distance by face width to make it scale-invariant
+    const normalizedDist = noseToEyeDist / Math.max(faceWidth, 1);
+    return normalizedDist > 0.65;
   }
 
   // ─── Full Liveness Assessment (Async version for JS context) ─────────────

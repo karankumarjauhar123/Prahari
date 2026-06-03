@@ -89,8 +89,12 @@ export const SettingsScreen: React.FC = () => {
   };
 
   const saveSettings = async (updated: AppSettings) => {
-    setSettings(updated);
-    await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(updated));
+    try {
+      setSettings(updated);
+      await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(updated));
+    } catch (err) {
+      console.error('[SettingsScreen] Failed to save settings:', err);
+    }
   };
 
   const loadStats = async () => {
@@ -105,10 +109,16 @@ export const SettingsScreen: React.FC = () => {
 
   const handleManualSync = async () => {
     setIsSyncing(true);
-    const result = await SyncService.triggerSync();
-    setIsSyncing(false);
-    await loadStats();
-    Alert.alert(result.success ? '✅ Sync Complete' : '❌ Sync Failed', result.message);
+    try {
+      const result = await SyncService.triggerSync();
+      Alert.alert(result.success ? '✅ Sync Complete' : '❌ Sync Failed', result.message);
+    } catch (err) {
+      console.error('[SettingsScreen] Manual sync error:', err);
+      Alert.alert('❌ Sync Failed', 'An error occurred during synchronization.');
+    } finally {
+      setIsSyncing(false);
+      await loadStats();
+    }
   };
 
   const handlePurge = () => {
@@ -121,10 +131,16 @@ export const SettingsScreen: React.FC = () => {
           text: 'Purge', style: 'destructive',
           onPress: async () => {
             setIsPurging(true);
-            await DatabaseService.purgeSyncedRecords();
-            await loadStats();
-            setIsPurging(false);
-            Alert.alert('✅ Done', 'Synced records purged from device');
+            try {
+              await DatabaseService.purgeSyncedRecords();
+              Alert.alert('✅ Done', 'Synced records purged from device');
+            } catch (err) {
+              console.error('[SettingsScreen] Purge error:', err);
+              Alert.alert('Error', 'Failed to purge records');
+            } finally {
+              await loadStats();
+              setIsPurging(false);
+            }
           },
         },
       ]
@@ -140,11 +156,19 @@ export const SettingsScreen: React.FC = () => {
         {
           text: 'Delete All', style: 'destructive',
           onPress: async () => {
-            const embeddings = await DatabaseService.getAllEmbeddings();
-            for (const e of embeddings) await DatabaseService.deleteEmbedding(e.userId);
-            FaceEngine.loadEmbeddings([]);
-            await loadStats();
-            Alert.alert('Done', 'All enrollments deleted');
+            try {
+              const embeddings = await DatabaseService.getAllEmbeddings();
+              for (const e of embeddings) {
+                await DatabaseService.deleteEmbedding(e.userId);
+              }
+              FaceEngine.loadEmbeddings([]);
+              Alert.alert('Done', 'All enrollments deleted');
+            } catch (err) {
+              console.error('[SettingsScreen] Delete all enrollments error:', err);
+              Alert.alert('Error', 'Failed to delete all enrollments');
+            } finally {
+              await loadStats();
+            }
           },
         },
       ]

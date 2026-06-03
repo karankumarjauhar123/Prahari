@@ -102,16 +102,16 @@ class SyncServiceClass {
           console.log(`[SyncService] ✅ Server accepted batch: ${chunk.length} records`);
         }
 
-        syncedIds.push(...chunk.map(r => r.id));
-        console.log(`[SyncService] ✅ Chunk synced: ${chunk.length} records`);
+        // Mark this chunk as synced in DB immediately to prevent duplicates on partial network failures
+        const chunkIds = chunk.map(r => r.id);
+        await DatabaseService.markSynced(chunkIds);
+        console.log(`[SyncService] ✅ Chunk synced & marked in DB: ${chunk.length} records`);
+        
+        syncedIds.push(...chunkIds);
       }
 
-      // Mark as synced in DB
+      // Auto-purge if setting is enabled (run only if at least one chunk succeeded)
       if (syncedIds.length > 0) {
-        await DatabaseService.markSynced(syncedIds);
-        console.log(`[SyncService] ✅ Marked ${syncedIds.length} records as synced`);
-
-        // Auto-purge if setting is enabled
         try {
           const rawSettings = await AsyncStorage.getItem('@prahari_settings');
           if (rawSettings) {

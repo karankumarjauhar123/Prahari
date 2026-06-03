@@ -145,27 +145,27 @@ class FaceEngineService {
       const x = cx - w / 2;
       const y = cy - h / 2;
 
-      // 5 landmark points
+      // 5 landmark points (skipping visibility/confidence rows)
       const landmarks: FaceLandmarks = {
         leftEye: {
           x: output[5 * numPredictions + i] * scaleX,
           y: output[6 * numPredictions + i] * scaleY,
         },
         rightEye: {
-          x: output[7 * numPredictions + i] * scaleX,
-          y: output[8 * numPredictions + i] * scaleY,
+          x: output[8 * numPredictions + i] * scaleX,
+          y: output[9 * numPredictions + i] * scaleY,
         },
         nose: {
-          x: output[9 * numPredictions + i] * scaleX,
-          y: output[10 * numPredictions + i] * scaleY,
-        },
-        leftMouth: {
           x: output[11 * numPredictions + i] * scaleX,
           y: output[12 * numPredictions + i] * scaleY,
         },
+        leftMouth: {
+          x: output[14 * numPredictions + i] * scaleX,
+          y: output[15 * numPredictions + i] * scaleY,
+        },
         rightMouth: {
-          x: output[13 * numPredictions + i] * scaleX,
-          y: output[14 * numPredictions + i] * scaleY,
+          x: output[17 * numPredictions + i] * scaleX,
+          y: output[18 * numPredictions + i] * scaleY,
         },
       };
 
@@ -478,8 +478,9 @@ class FaceEngineService {
 
     // Apply transform and sample 112x112 crop
     const output = new Float32Array(112 * 112 * 3);
-    const cos = Math.cos(-angle) * scale;
-    const sin = Math.sin(-angle) * scale;
+    const safeScale = Math.max(scale, 1e-6);
+    const cos = Math.cos(-angle) / safeScale;
+    const sin = Math.sin(-angle) / safeScale;
 
     for (let dy = 0; dy < 112; dy++) {
       for (let dx = 0; dx < 112; dx++) {

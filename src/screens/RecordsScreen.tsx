@@ -100,15 +100,26 @@ export const RecordsScreen: React.FC = () => {
   }, []);
 
   const loadRecords = async () => {
-    const data = await DatabaseService.getAttendanceHistory(undefined, 50);
-    setRecords(data);
-    setLoading(false);
-    setRefreshing(false);
+    try {
+      const data = await DatabaseService.getAttendanceHistory(undefined, 50);
+      setRecords(data);
+    } catch (err) {
+      console.error('[RecordsScreen] Failed to load records:', err);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   };
 
   const handleSync = async () => {
-    const result = await SyncService.triggerSync();
-    if (result.success) await loadRecords();
+    try {
+      const result = await SyncService.triggerSync();
+      if (result.success) {
+        await loadRecords();
+      }
+    } catch (err) {
+      console.error('[RecordsScreen] Sync failed:', err);
+    }
   };
 
   const formatTime = (ts: number) => {
@@ -283,7 +294,7 @@ export const RecordsScreen: React.FC = () => {
           data={records}
           keyExtractor={item => item.id}
           renderItem={renderRecord}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 30 }]}
           showsVerticalScrollIndicator={false}
           refreshControl={
             <RefreshControl

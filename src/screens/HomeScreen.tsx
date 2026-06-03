@@ -50,9 +50,18 @@ export const HomeScreen: React.FC = () => {
   // Floating button scale
   const fabScale = useRef(new Animated.Value(1)).current;
 
+  const loadStats = useCallback(async () => {
+    try {
+      const s = await DatabaseService.getStats();
+      setStats(s);
+    } catch (err) {
+      console.error('[HomeScreen] Failed to load stats:', err);
+    }
+  }, []);
+
   useFocusEffect(useCallback(() => {
     loadStats();
-  }, []));
+  }, [loadStats]));
 
   useEffect(() => {
     const unsub = SyncService.subscribe(setSyncStatus);
@@ -123,10 +132,6 @@ export const HomeScreen: React.FC = () => {
     return unsub;
   }, []);
 
-  const loadStats = async () => {
-    const s = await DatabaseService.getStats();
-    setStats(s);
-  };
 
   const onFabPressIn = () => {
     Animated.spring(fabScale, { toValue: 0.88, friction: 5, tension: 200, useNativeDriver: true }).start();

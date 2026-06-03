@@ -48,6 +48,12 @@ interface Props {
 export const useFaceRecognition = (props: Props) => {
   const [isReady, setIsReady] = useState(false);
   const [modelsLoaded, setModelsLoaded] = useState(false);
+  
+  // Ref to hold dynamic callbacks and settings to stabilize frameProcessor dependencies
+  const propsRef = useRef(props);
+  const requirePassiveLivenessRef = useRef(true);
+  const greyZoneFrameCountRef = useRef(0);
+
   const stateRef = useRef<AuthState>('INITIALIZING');
   const isProcessingRef = useRef(false);
   const passiveScoreRef = useRef(0);
@@ -55,10 +61,15 @@ export const useFaceRecognition = (props: Props) => {
   const frameCountRef = useRef(0);
   const resetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Keep props ref updated
+  useEffect(() => {
+    propsRef.current = props;
+  }, [props]);
+
   const updateState = useCallback((newState: AuthState) => {
     stateRef.current = newState;
-    props.onStateChange(newState);
-  }, [props.onStateChange]);
+    propsRef.current.onStateChange(newState);
+  }, []);
 
   // ─── Initialize engines ───────────────────────────────────────────────────
 
@@ -96,6 +107,7 @@ export const useFaceRecognition = (props: Props) => {
           // Wire passive liveness toggle
           if (typeof settings.requirePassiveLiveness === 'boolean') {
             LivenessEngine.setPassiveLivenessEnabled(settings.requirePassiveLiveness);
+            requirePassiveLivenessRef.current = settings.requirePassiveLiveness;
           }
         }
       } catch (settingsErr) {
@@ -139,7 +151,7 @@ export const useFaceRecognition = (props: Props) => {
     try {
       // ── Step 1: Face Detection ──
       if (!result.hasFace || !result.face) {
-        props.onFaceDetected(null);
+        propsRef.current.onFaceDetected(null);
         if (stateRef.current !== 'WAITING_FACE') {
           updateState('WAITING_FACE');
         }
@@ -148,43 +160,72 @@ export const useFaceRecognition = (props: Props) => {
 
       // Reconstruct face detection object for UI callbacks
       const face = result.face as FaceDetection;
-      props.onFaceDetected(face);
+      propsRef.current.onFaceDetected(face);
 
       // ── Step 2: Quality Check ──
       if (stateRef.current === 'WAITING_FACE') {
         updateState('QUALITY_CHECK');
       }
 
-      props.onQualityUpdate(result.qualityScore);
+      propsRef.current.onQualityUpdate(result.qualityScore);
 
       if (!result.qualityPass) {
-        props.onFailed(result.qualityReason ?? 'Adjust position');
+        propsRef.current.onFailed(result.qualityReason ?? 'Adjust position');
         updateState('WAITING_FACE');
         return;
       }
 
       // ── Step 3: Passive Liveness ──
       if (stateRef.current === 'QUALITY_CHECK') {
-        updateState('LIVENESS_PASSIVE');
+        if (!requirePassiveLivenessRef.current) {
+          // Bypass passive liveness stage
+          updateState('LIVENESS_ACTIVE');
+          LivenessEngine.activeLivenessActive.value = true;
+          const challenges = LivenessEngine.startChallenge(Date.now() % 9999);
+          propsRef.current.onChallengeChange(challenges[0]);
+        } else {
+          updateState('LIVENESS_PASSIVE');
+        }
       }
 
-      // Use passive score from worklet (anti-spoof model already ran there)
-      if (result.passiveScore > 0) {
-        passiveScoreRef.current = result.passiveScore;
-      }
+      if (stateRef.current === 'LIVENESS_PASSIVE') {
+        // Use passive score from worklet (anti-spoof model already ran there)
+        if (result.passiveScore > 0) {
+          passiveScoreRef.current = result.passiveScore;
+        }
 
-      // Spoof detected — halt immediately
-      if (passiveScoreRef.current > 0 && passiveScoreRef.current < 0.35) {
-        LivenessEngine.activeLivenessActive.value = false;
-        updateState('SPOOF_DETECTED');
-        props.onFailed('Spoof attempt detected');
-        resetTimeoutRef.current = setTimeout(() => {
-          updateState('WAITING_FACE');
-          activeCompleteRef.current = false;
-          passiveScoreRef.current = 0;
-          props.onChallengeChange(null);
-        }, 3000);
-        return;
+        // Spoof detected — halt immediately
+        if (passiveScoreRef.current > 0 && passiveScoreRef.current < 0.35) {
+          LivenessEngine.activeLivenessActive.value = false;
+          updateState('SPOOF_DETECTED');
+          propsRef.current.onFailed('Spoof attempt detected');
+          resetTimeoutRef.current = setTimeout(() => {
+            updateState('WAITING_FACE');
+            activeCompleteRef.current = false;
+            passiveScoreRef.current = 0;
+            propsRef.current.onChallengeChange(null);
+          }, 3000);
+          return;
+        }
+
+        // Grey zone handling to prevent infinite UI freeze
+        if (passiveScoreRef.current >= 0.35 && passiveScoreRef.current <= 0.55) {
+          greyZoneFrameCountRef.current++;
+          if (greyZoneFrameCountRef.current > 15) { // ~5 seconds at 3fps
+            greyZoneFrameCountRef.current = 0;
+            updateState('FAILED');
+            propsRef.current.onFailed('Liveness check inconclusive — please adjust lighting');
+            resetTimeoutRef.current = setTimeout(() => {
+              updateState('WAITING_FACE');
+              activeCompleteRef.current = false;
+              passiveScoreRef.current = 0;
+              propsRef.current.onChallengeChange(null);
+            }, 2500);
+            return;
+          }
+        } else {
+          greyZoneFrameCountRef.current = 0;
+        }
       }
 
       // ── Step 4: Active Liveness Challenge ──
@@ -193,7 +234,7 @@ export const useFaceRecognition = (props: Props) => {
         // Signal worklet to start running challenge checks
         LivenessEngine.activeLivenessActive.value = true;
         const challenges = LivenessEngine.startChallenge(Date.now() % 9999);
-        props.onChallengeChange(challenges[0]);
+        propsRef.current.onChallengeChange(challenges[0]);
       }
 
       if (stateRef.current === 'LIVENESS_ACTIVE' && !activeCompleteRef.current) {
@@ -202,12 +243,12 @@ export const useFaceRecognition = (props: Props) => {
           // Challenge timed out — fail and reset
           LivenessEngine.activeLivenessActive.value = false;
           updateState('FAILED');
-          props.onFailed('Liveness challenge timed out — try again');
+          propsRef.current.onFailed('Liveness challenge timed out — try again');
           resetTimeoutRef.current = setTimeout(() => {
             updateState('WAITING_FACE');
             activeCompleteRef.current = false;
             passiveScoreRef.current = 0;
-            props.onChallengeChange(null);
+            propsRef.current.onChallengeChange(null);
           }, 2000);
           return;
         }
@@ -220,7 +261,7 @@ export const useFaceRecognition = (props: Props) => {
         } else {
           // Update UI with current challenge
           if (result.currentChallenge) {
-            props.onChallengeChange(result.currentChallenge as any);
+            propsRef.current.onChallengeChange(result.currentChallenge as any);
           }
           return; // Still waiting for challenge completion
         }
@@ -253,17 +294,17 @@ export const useFaceRecognition = (props: Props) => {
           await DatabaseService.saveAttendance(record);
 
           updateState('SUCCESS');
-          props.onSuccess(matchResult.userName, matchResult.confidence);
+          propsRef.current.onSuccess(matchResult.userName, matchResult.confidence);
 
           resetTimeoutRef.current = setTimeout(() => {
             updateState('WAITING_FACE');
             activeCompleteRef.current = false;
             passiveScoreRef.current = 0;
-            props.onChallengeChange(null);
+            propsRef.current.onChallengeChange(null);
           }, 3000);
         } else {
           updateState('FAILED');
-          props.onFailed('Face not recognized');
+          propsRef.current.onFailed('Face not recognized');
           resetTimeoutRef.current = setTimeout(() => {
             updateState('WAITING_FACE');
             activeCompleteRef.current = false;

@@ -45,10 +45,9 @@ class DatabaseServiceClass {
         const rawKey = await AesCrypto.sha256(`${deviceId}_${timestamp}_prahari_v1`);
         this.encryptionKey = rawKey;
 
-        // Store in hardware keystore
+        // Store in hardware keystore (available as soon as device is unlocked, no prompt)
         await Keychain.setGenericPassword('prahari_db', rawKey, {
           service: DB_CONFIG.ENCRYPTION_KEY_ALIAS,
-          accessControl: Keychain.ACCESS_CONTROL.BIOMETRY_ANY_OR_DEVICE_PASSCODE,
           accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
         });
       }
@@ -104,13 +103,9 @@ class DatabaseServiceClass {
   async saveEmbedding(embedding: FaceEmbedding): Promise<void> {
     if (!this.db) throw new Error('Database not initialized');
 
-    // Encrypt the embedding vector before storing
-    const embeddingJson = JSON.stringify(embedding.embedding);
-    const iv = await AesCrypto.randomKey(16);
-    const encryptedEmbedding = await AesCrypto.encrypt(
-      embeddingJson, this.encryptionKey, iv, 'aes-256-cbc'
-    );
-    const embeddingStore = JSON.stringify({ iv, data: encryptedEmbedding });
+    // Embeddings are already fully secured by SQLCipher encryption on the database file level.
+    // Storing as JSON string to eliminate bridge-call performance bottlenecks.
+    const embeddingStore = JSON.stringify(embedding.embedding);
 
     await this.db.executeSql(
       `INSERT OR REPLACE INTO face_embeddings
@@ -138,22 +133,32 @@ class DatabaseServiceClass {
     for (let i = 0; i < result.rows.length; i++) {
       const row = result.rows.item(i);
       try {
-        const embeddingStore = JSON.parse(row.embedding_enc);
-        const decryptedJson = await AesCrypto.decrypt(
-          embeddingStore.data, this.encryptionKey,
-          embeddingStore.iv, 'aes-256-cbc'
-        );
+        const parsed = JSON.parse(row.embedding_enc);
+        let embeddingArray: number[];
+        
+        if (parsed && typeof parsed === 'object' && 'data' in parsed && 'iv' in parsed) {
+          // Decrypt legacy records (if any exist in database)
+          const decryptedJson = await AesCrypto.decrypt(
+            parsed.data, this.encryptionKey,
+            parsed.iv, 'aes-256-cbc'
+          );
+          embeddingArray = JSON.parse(decryptedJson);
+        } else {
+          // Standard JSON array format (fast, no native bridge decryption delay)
+          embeddingArray = parsed;
+        }
+
         embeddings.push({
           id: row.id,
           userId: row.user_id,
           userName: row.user_name,
           employeeId: row.employee_id,
-          embedding: JSON.parse(decryptedJson),
+          embedding: embeddingArray,
           enrolledAt: row.enrolled_at,
           deviceId: row.device_id,
         });
       } catch (e) {
-        console.error('[DB] Failed to decrypt embedding for user:', row.user_id);
+        console.error('[DB] Failed to parse/decrypt embedding for user:', row.user_id);
       }
     }
     return embeddings;

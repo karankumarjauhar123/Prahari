@@ -295,6 +295,14 @@ export const EnrollScreen: React.FC = () => {
     qualityScore: 0,
   });
 
+  const nameRef = useRef('');
+  const employeeIdRef = useRef('');
+
+  useEffect(() => {
+    nameRef.current = name;
+    employeeIdRef.current = employeeId;
+  }, [name, employeeId]);
+
   const isCapturingRef = useRef(false);
   const capturedEmbeddingsRef = useRef<number[][]>([]);
   const stepRef = useRef<EnrollState['step']>('FORM');
@@ -423,7 +431,7 @@ export const EnrollScreen: React.FC = () => {
     if (capturedEmbeddingsRef.current.length >= CAPTURE_COUNT) {
       finalizeEnrollment(capturedEmbeddingsRef.current);
     }
-  }, [name, employeeId]);
+  }, []); // Empty dependencies ensures VisionCamera frame processor is never re-registered during typing
 
   const handleEmbeddingOnJS = Worklets.createRunOnJS(handleEmbeddingResult);
 
@@ -556,8 +564,8 @@ export const EnrollScreen: React.FC = () => {
       const faceEmbedding: FaceEmbedding = {
         id: uuid(),
         userId,
-        userName: name.trim(),
-        employeeId: employeeId.trim(),
+        userName: nameRef.current.trim(),
+        employeeId: employeeIdRef.current.trim(),
         embedding: avgEmbedding,
         enrolledAt: Date.now(),
         deviceId,
@@ -950,7 +958,7 @@ export const EnrollScreen: React.FC = () => {
 
   if (state.step === 'DONE') {
     return (
-      <View style={[styles.container, styles.centerContent]}>
+      <View style={[styles.container, styles.centerContent, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 16 }]}>
         <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
         {/* Success checkmark with scale animation */}
@@ -1027,7 +1035,7 @@ export const EnrollScreen: React.FC = () => {
   // ─── Render: ERROR ───────────────────────────────────────────────────
 
   return (
-    <View style={[styles.container, styles.centerContent]}>
+    <View style={[styles.container, styles.centerContent, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 16 }]}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
       <ErrorIcon size={64} />
