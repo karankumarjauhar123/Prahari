@@ -6,6 +6,7 @@ import SQLite from 'react-native-sqlite-storage';
 import Keychain from 'react-native-keychain';
 import AesCrypto from 'react-native-aes-crypto';
 import DeviceInfo from 'react-native-device-info';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { DB_CONFIG } from '../constants';
 import type { FaceEmbedding, AttendanceRecord } from '../types';
 
@@ -14,47 +15,115 @@ SQLite.enablePromise(true);
 class DatabaseServiceClass {
   private db: SQLite.SQLiteDatabase | null = null;
   private encryptionKey: string = '';
+  private initPromise: Promise<void> | null = null;
+  private isInitialized = false;
+  private usedKeyType: 'keychain' | 'fallback' | null = null;
 
   // ─── Initialization ───────────────────────────────────────────────────────
 
   async initialize(): Promise<void> {
-    await this.loadOrCreateEncryptionKey();
-    this.db = await SQLite.openDatabase({
-      name: DB_CONFIG.DATABASE_NAME,
-      location: 'default',
-      // SQLCipher encryption key passed here
-      key: this.encryptionKey,
-    });
-    await this.createTables();
-    console.log('[DatabaseService] ✅ Initialized');
+    if (this.isInitialized) return;
+    if (this.initPromise) return this.initPromise;
+
+    this.initPromise = (async () => {
+      try {
+        await this.loadOrCreateEncryptionKey();
+        this.db = await SQLite.openDatabase({
+          name: DB_CONFIG.DATABASE_NAME,
+          location: 'default',
+          // SQLCipher encryption key passed here
+          key: this.encryptionKey,
+        });
+        await this.createTables();
+
+        // Persist the key type used to open the database successfully
+        if (this.usedKeyType) {
+          await AsyncStorage.setItem('@prahari_db_key_type', this.usedKeyType);
+        }
+
+        this.isInitialized = true;
+        console.log(`[DatabaseService] ✅ Initialized with key type: ${this.usedKeyType}`);
+      } catch (error) {
+        this.initPromise = null;
+        console.error('[DatabaseService] Initialization failed:', error);
+        throw error;
+      }
+    })();
+
+    return this.initPromise;
+  }
+
+  private async ensureInitialized(): Promise<SQLite.SQLiteDatabase> {
+    if (!this.db || !this.isInitialized) {
+      await this.initialize();
+    }
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+    return this.db;
   }
 
   private async loadOrCreateEncryptionKey(): Promise<void> {
+    const deviceId = await DeviceInfo.getUniqueId();
+    const storedKeyType = await AsyncStorage.getItem('@prahari_db_key_type');
+
+    if (storedKeyType === 'fallback') {
+      this.encryptionKey = await AesCrypto.sha256(`${deviceId}_prahari_fallback`);
+      this.usedKeyType = 'fallback';
+      console.log('[DatabaseService] 🔐 Using fallback encryption key (enforced by key type)');
+      return;
+    }
+
+    if (storedKeyType === 'keychain') {
+      try {
+        const credentials = await Keychain.getGenericPassword({
+          service: DB_CONFIG.ENCRYPTION_KEY_ALIAS,
+        });
+        if (!credentials) {
+          throw new Error('No credentials found in Keychain for registered key type');
+        }
+        this.encryptionKey = credentials.password;
+        this.usedKeyType = 'keychain';
+        console.log('[DatabaseService] 🔐 Using Keychain encryption key');
+        return;
+      } catch (error) {
+        console.error('[DatabaseService] Failed to load Keychain key, but database was encrypted with it:', error);
+        throw new Error('Secure hardware keystore is currently locked or unavailable. Please unlock your device and retry.');
+      }
+    }
+
+    // First-time launch or uninitialized key type: try Keychain first, fallback if it fails
     try {
-      // Try to load existing key from secure hardware keystore
+      // For compatibility: also check legacy fallback key forced flag
+      const useFallbackStr = await AsyncStorage.getItem('@prahari_use_fallback_key');
+      if (useFallbackStr === 'true') {
+        throw new Error('Legacy fallback key forced');
+      }
+
       const credentials = await Keychain.getGenericPassword({
         service: DB_CONFIG.ENCRYPTION_KEY_ALIAS,
       });
 
       if (credentials) {
         this.encryptionKey = credentials.password;
+        this.usedKeyType = 'keychain';
       } else {
-        // Generate new 256-bit key
-        const deviceId = await DeviceInfo.getUniqueId();
         const timestamp = Date.now().toString();
         const rawKey = await AesCrypto.sha256(`${deviceId}_${timestamp}_prahari_v1`);
-        this.encryptionKey = rawKey;
-
-        // Store in hardware keystore (available as soon as device is unlocked, no prompt)
-        await Keychain.setGenericPassword('prahari_db', rawKey, {
+        const success = await Keychain.setGenericPassword('prahari_db', rawKey, {
           service: DB_CONFIG.ENCRYPTION_KEY_ALIAS,
           accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
         });
+        if (!success) {
+          throw new Error('Keychain setGenericPassword returned false');
+        }
+        this.encryptionKey = rawKey;
+        this.usedKeyType = 'keychain';
       }
     } catch (error) {
-      // Fallback: derive key from device ID only
-      const deviceId = await DeviceInfo.getUniqueId();
+      console.warn('[DatabaseService] Keychain access failed during first launch, falling back to derived key:', error);
       this.encryptionKey = await AesCrypto.sha256(`${deviceId}_prahari_fallback`);
+      this.usedKeyType = 'fallback';
     }
   }
 
@@ -101,13 +170,13 @@ class DatabaseServiceClass {
   // ─── Face Embeddings CRUD ──────────────────────────────────────────────────
 
   async saveEmbedding(embedding: FaceEmbedding): Promise<void> {
-    if (!this.db) throw new Error('Database not initialized');
+    const db = await this.ensureInitialized();
 
     // Embeddings are already fully secured by SQLCipher encryption on the database file level.
     // Storing as JSON string to eliminate bridge-call performance bottlenecks.
     const embeddingStore = JSON.stringify(embedding.embedding);
 
-    await this.db.executeSql(
+    await db.executeSql(
       `INSERT OR REPLACE INTO face_embeddings
        (id, user_id, user_name, employee_id, embedding_enc, enrolled_at, device_id)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -124,8 +193,8 @@ class DatabaseServiceClass {
   }
 
   async getAllEmbeddings(): Promise<FaceEmbedding[]> {
-    if (!this.db) return [];
-    const [result] = await this.db.executeSql(
+    const db = await this.ensureInitialized();
+    const [result] = await db.executeSql(
       'SELECT * FROM face_embeddings'
     );
 
@@ -165,8 +234,8 @@ class DatabaseServiceClass {
   }
 
   async deleteEmbedding(userId: string): Promise<void> {
-    if (!this.db) return;
-    await this.db.executeSql(
+    const db = await this.ensureInitialized();
+    await db.executeSql(
       'DELETE FROM face_embeddings WHERE user_id = ?', [userId]
     );
   }
@@ -174,8 +243,8 @@ class DatabaseServiceClass {
   // ─── Attendance Records CRUD ───────────────────────────────────────────────
 
   async saveAttendance(record: AttendanceRecord): Promise<void> {
-    if (!this.db) throw new Error('Database not initialized');
-    await this.db.executeSql(
+    const db = await this.ensureInitialized();
+    await db.executeSql(
       `INSERT INTO attendance_records
        (id, user_id, user_name, employee_id, timestamp, confidence,
         liveness_score, location_lat, location_lng, synced, image_hash, created_at)
@@ -197,13 +266,15 @@ class DatabaseServiceClass {
   }
 
   async getUnsynced(): Promise<AttendanceRecord[]> {
-    if (!this.db) return [];
-    const [result] = await this.db.executeSql(
+    const db = await this.ensureInitialized();
+    const [result] = await db.executeSql(
       'SELECT * FROM attendance_records WHERE synced = 0 ORDER BY timestamp ASC LIMIT 100'
     );
     const records: AttendanceRecord[] = [];
     for (let i = 0; i < result.rows.length; i++) {
       const row = result.rows.item(i);
+      const hasLocation = row.location_lat !== null && row.location_lat !== undefined &&
+                          row.location_lng !== null && row.location_lng !== undefined;
       records.push({
         id: row.id,
         userId: row.user_id,
@@ -212,7 +283,7 @@ class DatabaseServiceClass {
         timestamp: row.timestamp,
         confidence: row.confidence,
         livenessScore: row.liveness_score,
-        location: (row.location_lat !== null && row.location_lng !== null) ? { lat: row.location_lat, lng: row.location_lng } : undefined,
+        location: hasLocation ? { lat: Number(row.location_lat), lng: Number(row.location_lng) } : undefined,
         synced: false,
         imageHash: row.image_hash,
       });
@@ -221,26 +292,28 @@ class DatabaseServiceClass {
   }
 
   async markSynced(ids: string[]): Promise<void> {
-    if (!this.db || ids.length === 0) return;
+    if (ids.length === 0) return;
+    const db = await this.ensureInitialized();
     const placeholders = ids.map(() => '?').join(',');
-    await this.db.executeSql(
+    await db.executeSql(
       `UPDATE attendance_records SET synced = 1 WHERE id IN (${placeholders})`,
       ids
     );
   }
 
   async markFailed(ids: string[]): Promise<void> {
-    if (!this.db || ids.length === 0) return;
+    if (ids.length === 0) return;
+    const db = await this.ensureInitialized();
     const placeholders = ids.map(() => '?').join(',');
-    await this.db.executeSql(
+    await db.executeSql(
       `UPDATE attendance_records SET synced = 2 WHERE id IN (${placeholders})`,
       ids
     );
   }
 
   async purgeSyncedRecords(): Promise<number> {
-    if (!this.db) return 0;
-    const [result] = await this.db.executeSql(
+    const db = await this.ensureInitialized();
+    const [result] = await db.executeSql(
       'DELETE FROM attendance_records WHERE synced = 1'
     );
     console.log(`[DB] Purged ${result.rowsAffected} synced records`);
@@ -248,21 +321,23 @@ class DatabaseServiceClass {
   }
 
   async getAttendanceHistory(userId?: string, limit = 50): Promise<AttendanceRecord[]> {
-    if (!this.db) return [];
+    const db = await this.ensureInitialized();
     const query = userId
       ? 'SELECT * FROM attendance_records WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?'
       : 'SELECT * FROM attendance_records ORDER BY timestamp DESC LIMIT ?';
     const params = userId ? [userId, limit] : [limit];
-    const [result] = await this.db.executeSql(query, params);
+    const [result] = await db.executeSql(query, params);
 
     const records: AttendanceRecord[] = [];
     for (let i = 0; i < result.rows.length; i++) {
       const row = result.rows.item(i);
+      const hasLocation = row.location_lat !== null && row.location_lat !== undefined &&
+                          row.location_lng !== null && row.location_lng !== undefined;
       records.push({
         id: row.id, userId: row.user_id, userName: row.user_name,
         employeeId: row.employee_id, timestamp: row.timestamp,
         confidence: row.confidence, livenessScore: row.liveness_score,
-        location: (row.location_lat !== null && row.location_lng !== null) ? { lat: row.location_lat, lng: row.location_lng } : undefined,
+        location: hasLocation ? { lat: Number(row.location_lat), lng: Number(row.location_lng) } : undefined,
         synced: row.synced === 1, imageHash: row.image_hash,
       });
     }
@@ -270,10 +345,10 @@ class DatabaseServiceClass {
   }
 
   async getStats(): Promise<{ totalEmbeddings: number; totalRecords: number; unsyncedCount: number }> {
-    if (!this.db) return { totalEmbeddings: 0, totalRecords: 0, unsyncedCount: 0 };
-    const [emb] = await this.db.executeSql('SELECT COUNT(*) as cnt FROM face_embeddings');
-    const [total] = await this.db.executeSql('SELECT COUNT(*) as cnt FROM attendance_records');
-    const [unsynced] = await this.db.executeSql('SELECT COUNT(*) as cnt FROM attendance_records WHERE synced = 0');
+    const db = await this.ensureInitialized();
+    const [emb] = await db.executeSql('SELECT COUNT(*) as cnt FROM face_embeddings');
+    const [total] = await db.executeSql('SELECT COUNT(*) as cnt FROM attendance_records');
+    const [unsynced] = await db.executeSql('SELECT COUNT(*) as cnt FROM attendance_records WHERE synced = 0');
     return {
       totalEmbeddings: emb.rows.item(0).cnt,
       totalRecords: total.rows.item(0).cnt,
@@ -282,8 +357,13 @@ class DatabaseServiceClass {
   }
 
   async close(): Promise<void> {
-    await this.db?.close();
-    this.db = null;
+    if (this.db) {
+      await this.db.close();
+      this.db = null;
+    }
+    this.isInitialized = false;
+    this.initPromise = null;
+    this.usedKeyType = null;
   }
 }
 

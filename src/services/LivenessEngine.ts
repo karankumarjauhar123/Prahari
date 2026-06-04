@@ -17,9 +17,10 @@ import type {
 class LivenessEngineService {
   public antiSpoofModel: TensorflowModel | null = null;
   public faceMeshModel: TensorflowModel | null = null;
+  private isInitialized = false;
 
   // Optical flow state (Shared values to synchronize between JS and Worklet threads)
-  public prevFrameShared = Worklets.createSharedValue<Float32Array | null>(null);
+  public prevFrameShared = Worklets.createSharedValue<Float32Array | Uint8Array | null>(null);
   public prevFrameWShared = Worklets.createSharedValue<number>(0);
 
   // Active challenge state (Shared values to synchronize between JS and Worklet threads)
@@ -55,6 +56,7 @@ class LivenessEngineService {
   // ─── Initialization ───────────────────────────────────────────────────────
 
   async initialize(): Promise<void> {
+    if (this.isInitialized) return;
     this.antiSpoofModel = await loadTensorflowModel(
       require('../../models/antispoof_mobilenet_int8.tflite'), 'default'
     );
@@ -62,13 +64,14 @@ class LivenessEngineService {
     this.faceMeshModel = await loadTensorflowModel(
       require('../../models/face_mesh_lite.tflite'), 'default'
     );
+    this.isInitialized = true;
     console.log('[LivenessEngine] ✅ Loaded (anti-spoof + face mesh active liveness)');
   }
 
   // ─── Stage 1: Passive Liveness (Async version for JS context) ─────────────
 
   async runPassiveLiveness(
-    pixels: Float32Array,
+    pixels: Float32Array | Uint8Array,
     face: FaceDetection,
     frameWidth: number,
     frameHeight: number
@@ -90,7 +93,7 @@ class LivenessEngineService {
   }
 
   private async antiSpoofScore(
-    pixels: Float32Array,
+    pixels: Float32Array | Uint8Array,
     face: FaceDetection,
     frameWidth: number,
     frameHeight: number
@@ -118,7 +121,7 @@ class LivenessEngineService {
   // ─── Stage 1: Passive Liveness (Sync version for Worklet context) ──────────
 
   runPassiveLivenessSync(
-    pixels: Float32Array,
+    pixels: Float32Array | Uint8Array,
     face: FaceDetection,
     frameWidth: number,
     frameHeight: number,
@@ -142,7 +145,7 @@ class LivenessEngineService {
   }
 
   private antiSpoofScoreSync(
-    pixels: Float32Array,
+    pixels: Float32Array | Uint8Array,
     face: FaceDetection,
     frameWidth: number,
     frameHeight: number,
@@ -171,13 +174,13 @@ class LivenessEngineService {
 
   // Optical flow using Lucas-Kanade approximation
   public opticalFlowScore(
-    pixels: Float32Array,
+    pixels: Float32Array | Uint8Array,
     frameWidth: number,
     frameHeight: number
   ): number {
     'worklet';
     if (!LivenessEngine.prevFrameShared.value || LivenessEngine.prevFrameWShared.value !== frameWidth || LivenessEngine.prevFrameShared.value.length !== pixels.length) {
-      LivenessEngine.prevFrameShared.value = new Float32Array(pixels);
+      LivenessEngine.prevFrameShared.value = pixels.slice();
       LivenessEngine.prevFrameWShared.value = frameWidth;
       return 0.5; // neutral on first frame
     }
@@ -197,7 +200,7 @@ class LivenessEngineService {
       }
     }
 
-    LivenessEngine.prevFrameShared.value.set(pixels);
+    LivenessEngine.prevFrameShared.value = pixels.slice();
     const avgMotion = count > 0 ? totalMotion / (count * 255) : 0;
 
     if (Number.isNaN(avgMotion)) return 0.5;
@@ -212,7 +215,7 @@ class LivenessEngineService {
 
   // Local Binary Pattern texture analysis
   public lbpTextureScore(
-    pixels: Float32Array,
+    pixels: Float32Array | Uint8Array,
     face: FaceDetection,
     frameWidth: number
   ): number {
@@ -265,7 +268,7 @@ class LivenessEngineService {
     return normalizedEntropy > 0.6 ? 0.85 : normalizedEntropy < 0.35 ? 0.15 : normalizedEntropy;
   }
 
-  private getGray(pixels: Float32Array, x: number, y: number, w: number): number {
+  private getGray(pixels: Float32Array | Uint8Array, x: number, y: number, w: number): number {
     'worklet';
     const idx = (y * w + x) * 3;
     const r = pixels[idx] ?? 0;
@@ -300,7 +303,7 @@ class LivenessEngineService {
 
   // Check challenge progress (Async version for JS context)
   async checkChallenge(
-    pixels: Float32Array,
+    pixels: Float32Array | Uint8Array,
     face: FaceDetection,
     frameWidth: number,
     frameHeight: number
@@ -311,7 +314,10 @@ class LivenessEngineService {
     }
 
     const mesh = await this.getFaceMesh(pixels, face, frameWidth, frameHeight);
-    if (!mesh) return { completed: false, timedOut: false, currentChallenge: this.getCurrentChallenge() };
+    if (!mesh) {
+      this.nodBaselineShared.value = -1;
+      return { completed: false, timedOut: false, currentChallenge: this.getCurrentChallenge() };
+    }
 
     const challenge = this.getCurrentChallenge();
     if (!challenge) return { completed: true, timedOut: false, currentChallenge: null };
@@ -354,7 +360,7 @@ class LivenessEngineService {
   }
 
   private async getFaceMesh(
-    pixels: Float32Array,
+    pixels: Float32Array | Uint8Array,
     face: FaceDetection,
     frameWidth: number,
     frameHeight: number
@@ -399,7 +405,7 @@ class LivenessEngineService {
 
   // Check challenge progress (Sync version for Worklet context)
   checkChallengeSync(
-    pixels: Float32Array,
+    pixels: Float32Array | Uint8Array,
     face: FaceDetection,
     frameWidth: number,
     frameHeight: number,
@@ -412,7 +418,10 @@ class LivenessEngineService {
     }
 
     const mesh = LivenessEngine.getFaceMeshSync(pixels, face, frameWidth, frameHeight, faceMeshModel);
-    if (!mesh) return { completed: false, timedOut: false, currentChallenge: LivenessEngine.getCurrentChallenge() };
+    if (!mesh) {
+      LivenessEngine.nodBaselineShared.value = -1;
+      return { completed: false, timedOut: false, currentChallenge: LivenessEngine.getCurrentChallenge() };
+    }
 
     const challenge = LivenessEngine.getCurrentChallenge();
     if (!challenge) return { completed: true, timedOut: false, currentChallenge: null };
@@ -455,7 +464,7 @@ class LivenessEngineService {
   }
 
   private getFaceMeshSync(
-    pixels: Float32Array,
+    pixels: Float32Array | Uint8Array,
     face: FaceDetection,
     frameWidth: number,
     frameHeight: number,
@@ -596,7 +605,7 @@ class LivenessEngineService {
   // ─── Full Liveness Assessment (Async version for JS context) ─────────────
 
   async assessLiveness(
-    pixels: Float32Array,
+    pixels: Float32Array | Uint8Array,
     face: FaceDetection,
     frameWidth: number,
     frameHeight: number,
@@ -619,7 +628,7 @@ class LivenessEngineService {
   // ─── Full Liveness Assessment (Sync version for Worklet context) ──────────
 
   assessLivenessSync(
-    pixels: Float32Array,
+    pixels: Float32Array | Uint8Array,
     face: FaceDetection,
     frameWidth: number,
     frameHeight: number,
@@ -658,7 +667,7 @@ class LivenessEngineService {
   }
 
   private cropResize(
-    pixels: Float32Array, x: number, y: number,
+    pixels: Float32Array | Uint8Array, x: number, y: number,
     w: number, h: number, frameWidth: number, targetSize: number
   ): Float32Array {
     'worklet';

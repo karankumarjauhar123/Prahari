@@ -123,6 +123,7 @@ class FaceEngineService {
     inputSize: number
   ): FaceDetection | null {
     'worklet';
+    if (!output || output.length < 168000 || origW <= 0 || origH <= 0 || inputSize <= 0) return null;
     // output shape: [20, 8400] transposed → we iterate predictions
     // Each col: [cx, cy, w, h, conf, lm0x, lm0y, lm1x, lm1y, ... lm4x, lm4y]
     const numPredictions = 8400;
@@ -142,35 +143,49 @@ class FaceEngineService {
       const w = output[2 * numPredictions + i] * scaleX;
       const h = output[3 * numPredictions + i] * scaleY;
 
-      const x = cx - w / 2;
-      const y = cy - h / 2;
+      let x1 = cx - w / 2;
+      let y1 = cy - h / 2;
+      let x2 = cx + w / 2;
+      let y2 = cy + h / 2;
+
+      // Clamp bounding box to frame boundaries
+      x1 = Math.max(0, Math.min(origW, x1));
+      y1 = Math.max(0, Math.min(origH, y1));
+      x2 = Math.max(0, Math.min(origW, x2));
+      y2 = Math.max(0, Math.min(origH, y2));
+
+      const clampedW = x2 - x1;
+      const clampedH = y2 - y1;
+
+      const clampX = (val: number) => Math.max(0, Math.min(origW - 1, val));
+      const clampY = (val: number) => Math.max(0, Math.min(origH - 1, val));
 
       // 5 landmark points (skipping visibility/confidence rows)
       const landmarks: FaceLandmarks = {
         leftEye: {
-          x: output[5 * numPredictions + i] * scaleX,
-          y: output[6 * numPredictions + i] * scaleY,
+          x: clampX(output[5 * numPredictions + i] * scaleX),
+          y: clampY(output[6 * numPredictions + i] * scaleY),
         },
         rightEye: {
-          x: output[8 * numPredictions + i] * scaleX,
-          y: output[9 * numPredictions + i] * scaleY,
+          x: clampX(output[8 * numPredictions + i] * scaleX),
+          y: clampY(output[9 * numPredictions + i] * scaleY),
         },
         nose: {
-          x: output[11 * numPredictions + i] * scaleX,
-          y: output[12 * numPredictions + i] * scaleY,
+          x: clampX(output[11 * numPredictions + i] * scaleX),
+          y: clampY(output[12 * numPredictions + i] * scaleY),
         },
         leftMouth: {
-          x: output[14 * numPredictions + i] * scaleX,
-          y: output[15 * numPredictions + i] * scaleY,
+          x: clampX(output[14 * numPredictions + i] * scaleX),
+          y: clampY(output[15 * numPredictions + i] * scaleY),
         },
         rightMouth: {
-          x: output[17 * numPredictions + i] * scaleX,
-          y: output[18 * numPredictions + i] * scaleY,
+          x: clampX(output[17 * numPredictions + i] * scaleX),
+          y: clampY(output[18 * numPredictions + i] * scaleY),
         },
       };
 
       bestConf = conf;
-      bestFace = { x, y, width: w, height: h, confidence: conf, landmarks };
+      bestFace = { x: x1, y: y1, width: clampedW, height: clampedH, confidence: conf, landmarks };
     }
 
     return bestFace;
@@ -211,6 +226,10 @@ class FaceEngineService {
     const roi = FaceEngine.extractROI(pixelBuffer, face, frameWidth, frameHeight);
 
     // 4. Brightness check (mean pixel value)
+    if (roi.length === 0) {
+      return { pass: false, score: 0, reason: 'Invalid face region',
+               blur: 0, brightness: 0, faceSize };
+    }
     const brightness = roi.reduce((a, b) => a + b, 0) / roi.length;
     if (brightness < QUALITY_CONFIG.MIN_BRIGHTNESS) {
       return { pass: false, score: 0.4, reason: 'Too dark — find better lighting',
@@ -240,8 +259,8 @@ class FaceEngineService {
     'worklet';
     const kernel = [0, 1, 0, 1, -4, 1, 0, 1, 0];
     let sum = 0, sumSq = 0;
+    if (width <= 2 || height <= 2) return 0;
     const n = (width - 2) * (height - 2);
-    if (n <= 0) return 0;
 
     for (let y = 1; y < height - 1; y++) {
       for (let x = 1; x < width - 1; x++) {
@@ -460,7 +479,8 @@ class FaceEngineService {
     frameWidth: number
   ): Float32Array {
     'worklet';
-    const frameHeight = pixels.length / (frameWidth * 3);
+    if (frameWidth <= 0 || pixels.length === 0) return new Float32Array(112 * 112 * 3);
+    const frameHeight = Math.floor(pixels.length / (frameWidth * 3));
     // Standard aligned face coordinates for 112x112 (ArcFace standard)
     const refPoints = [
       { x: 30.2946, y: 51.6963 }, // left eye
@@ -495,9 +515,11 @@ class FaceEngineService {
 
         if (sx >= 0 && sx < frameWidth && sy >= 0 && sy < frameHeight) {
           const srcIdx = (sy * frameWidth + sx) * 3;
-          output[dstIdx] = pixels[srcIdx];
-          output[dstIdx + 1] = pixels[srcIdx + 1];
-          output[dstIdx + 2] = pixels[srcIdx + 2];
+          if (srcIdx >= 0 && srcIdx + 2 < pixels.length) {
+            output[dstIdx] = pixels[srcIdx];
+            output[dstIdx + 1] = pixels[srcIdx + 1];
+            output[dstIdx + 2] = pixels[srcIdx + 2];
+          }
         }
       }
     }
@@ -521,8 +543,8 @@ class FaceEngineService {
     }
 
     const angle = Math.atan2(num, den);
-    const scale = Math.sqrt(num * num + den * den) /
-                  src.reduce((s, p) => s + (p.x - srcMean.x) ** 2 + (p.y - srcMean.y) ** 2, 0);
+    const denom = src.reduce((s, p) => s + (p.x - srcMean.x) ** 2 + (p.y - srcMean.y) ** 2, 0);
+    const scale = Math.sqrt(num * num + den * den) / (denom === 0 ? 1e-10 : denom);
 
     return {
       angle,
@@ -538,22 +560,37 @@ class FaceEngineService {
     dstW: number, dstH: number
   ): Float32Array {
     'worklet';
+    if (src.length === 0 || srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) {
+      return new Float32Array(Math.max(0, dstW) * Math.max(0, dstH) * 3);
+    }
     const dst = new Float32Array(dstW * dstH * 3);
     const scaleX = srcW / dstW, scaleY = srcH / dstH;
 
     for (let dy = 0; dy < dstH; dy++) {
       for (let dx = 0; dx < dstW; dx++) {
         const srcX = dx * scaleX, srcY = dy * scaleY;
-        const x0 = Math.floor(srcX), y0 = Math.floor(srcY);
-        const x1 = Math.min(x0 + 1, srcW - 1), y1 = Math.min(y0 + 1, srcH - 1);
+        const x0 = Math.max(0, Math.min(Math.floor(srcX), srcW - 1));
+        const y0 = Math.max(0, Math.min(Math.floor(srcY), srcH - 1));
+        const x1 = Math.max(0, Math.min(x0 + 1, srcW - 1));
+        const y1 = Math.max(0, Math.min(y0 + 1, srcH - 1));
         const fx = srcX - x0, fy = srcY - y0;
 
         for (let c = 0; c < 3; c++) {
+          const idx00 = (y0 * srcW + x0) * 3 + c;
+          const idx10 = (y0 * srcW + x1) * 3 + c;
+          const idx01 = (y1 * srcW + x0) * 3 + c;
+          const idx11 = (y1 * srcW + x1) * 3 + c;
+
+          const v00 = idx00 >= 0 && idx00 < src.length ? src[idx00] : 0;
+          const v10 = idx10 >= 0 && idx10 < src.length ? src[idx10] : 0;
+          const v01 = idx01 >= 0 && idx01 < src.length ? src[idx01] : 0;
+          const v11 = idx11 >= 0 && idx11 < src.length ? src[idx11] : 0;
+
           dst[(dy * dstW + dx) * 3 + c] =
-            (1 - fx) * (1 - fy) * src[(y0 * srcW + x0) * 3 + c] +
-            fx * (1 - fy) * src[(y0 * srcW + x1) * 3 + c] +
-            (1 - fx) * fy * src[(y1 * srcW + x0) * 3 + c] +
-            fx * fy * src[(y1 * srcW + x1) * 3 + c];
+            (1 - fx) * (1 - fy) * v00 +
+            fx * (1 - fy) * v10 +
+            (1 - fx) * fy * v01 +
+            fx * fy * v11;
         }
       }
     }
@@ -577,9 +614,11 @@ class FaceEngineService {
       for (let col = 0; col < w; col++) {
         const srcIdx = ((y + row) * frameWidth + (x + col)) * 3;
         const dstIdx = (row * w + col) * 3;
-        roi[dstIdx] = pixels[srcIdx];
-        roi[dstIdx + 1] = pixels[srcIdx + 1];
-        roi[dstIdx + 2] = pixels[srcIdx + 2];
+        if (srcIdx >= 0 && srcIdx + 2 < pixels.length) {
+          roi[dstIdx] = pixels[srcIdx];
+          roi[dstIdx + 1] = pixels[srcIdx + 1];
+          roi[dstIdx + 2] = pixels[srcIdx + 2];
+        }
       }
     }
     return roi;

@@ -268,6 +268,25 @@ interface EnrollState {
   embeddings: number[][];
 }
 
+const averageEmbeddings = (embeddings: number[][]): number[] => {
+  if (!embeddings || embeddings.length === 0) return [];
+  const dim = embeddings[0].length;
+  if (dim === 0) return [];
+  const avg = new Array(dim).fill(0);
+  for (const emb of embeddings) {
+    const currentDim = Math.min(dim, emb.length);
+    for (let i = 0; i < currentDim; i++) {
+      avg[i] += emb[i];
+    }
+  }
+  for (let i = 0; i < dim; i++) {
+    avg[i] /= embeddings.length;
+  }
+  // Re-normalize
+  const norm = Math.sqrt(avg.reduce((s, x) => s + x * x, 0));
+  return avg.map(x => x / (norm === 0 ? 1e-10 : norm));
+};
+
 export const EnrollScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
   const nav = useNavigation();
@@ -410,6 +429,40 @@ export const EnrollScreen: React.FC = () => {
 
   // ─── Capture Logic (sync worklet – no ArrayBuffer crosses to JS) ────────
 
+  const finalizeEnrollment = useCallback(async (embeddings: number[][]) => {
+    setState(prev => {
+      const next = { ...prev, step: 'PROCESSING' as const };
+      stepRef.current = next.step;
+      return next;
+    });
+
+    try {
+      // Average the 5 embeddings → more robust than single capture
+      const avgEmbedding = averageEmbeddings(embeddings);
+
+      const userId = uuid();
+      const deviceId = await DeviceInfo.getUniqueId();
+
+      const faceEmbedding: FaceEmbedding = {
+        id: uuid(),
+        userId,
+        userName: nameRef.current.trim(),
+        employeeId: employeeIdRef.current.trim(),
+        embedding: avgEmbedding,
+        enrolledAt: Date.now(),
+        deviceId,
+      };
+
+      await DatabaseService.saveEmbedding(faceEmbedding);
+      FaceEngine.addEmbedding(faceEmbedding);
+
+      setState(prev => ({ ...prev, step: 'DONE' }));
+    } catch (err) {
+      console.error('[Enroll] Save error:', err);
+      setState(prev => ({ ...prev, step: 'ERROR' }));
+    }
+  }, []);
+
   const handleEmbeddingResult = useCallback((embedding: number[]) => {
     if (capturedEmbeddingsRef.current.length >= CAPTURE_COUNT) return;
     capturedEmbeddingsRef.current.push(embedding);
@@ -431,7 +484,7 @@ export const EnrollScreen: React.FC = () => {
     if (capturedEmbeddingsRef.current.length >= CAPTURE_COUNT) {
       finalizeEnrollment(capturedEmbeddingsRef.current);
     }
-  }, []); // Empty dependencies ensures VisionCamera frame processor is never re-registered during typing
+  }, [finalizeEnrollment]);
 
   const handleEmbeddingOnJS = useMemo(() => Worklets.createRunOnJS(handleEmbeddingResult), [handleEmbeddingResult]);
 
@@ -473,13 +526,13 @@ export const EnrollScreen: React.FC = () => {
   const frameProcessor = useFrameProcessor((frame) => {
     'worklet';
     if (!detModel || !recModel) return;
-    runAtTargetFps(2, () => {
+    runAtTargetFps(3, () => {
       'worklet';
       try {
         const width = frame.width;
         const height = frame.height;
         const buffer = frame.toArrayBuffer();
-        const pixels = new Float32Array(new Uint8Array(buffer));
+        const pixels = new Uint8Array(buffer);
 
         // Step 1: Detect face (synchronous — runs in worklet thread)
         const face = wDetectFace(pixels, width, height, detModel);
@@ -488,7 +541,7 @@ export const EnrollScreen: React.FC = () => {
           return;
         }
 
-        // Step 2: Extract face metrics for quality check
+        // Step 2: Quick geometric checks FIRST (cheap — no pixel processing)
         const faceSize = Math.min(face.width, face.height);
         const centerX = face.x + face.width / 2;
         const centerY = face.y + face.height / 2;
@@ -498,43 +551,49 @@ export const EnrollScreen: React.FC = () => {
         const isCentered = dx <= QUALITY_CONFIG.FACE_CENTER_TOLERANCE && dy <= QUALITY_CONFIG.FACE_CENTER_TOLERANCE;
         const isLargeEnough = faceSize >= QUALITY_CONFIG.MIN_FACE_SIZE_PX;
 
+        // Early return BEFORE expensive operations if basic checks fail
+        if (!isLargeEnough) {
+          handleFrameStatusOnJS(true, false, false, false, false, 'Move closer to camera', 0);
+          return;
+        }
+        if (!isCentered) {
+          handleFrameStatusOnJS(true, false, false, false, false, 'Center your face', 0);
+          return;
+        }
+
+        // Only run expensive pixel operations after geometric checks pass
         const roi = wExtractROI(pixels, face, width, height);
-        const brightness = roi.reduce((a: number, b: number) => a + b, 0) / roi.length;
+        if (roi.length === 0) {
+          handleFrameStatusOnJS(true, false, false, false, false, 'Invalid face region', 0);
+          return;
+        }
+        let brightnessSum = 0;
+        for (let bi = 0; bi < roi.length; bi++) brightnessSum += roi[bi];
+        const brightness = brightnessSum / roi.length;
         const isBright = brightness >= QUALITY_CONFIG.MIN_BRIGHTNESS && brightness <= QUALITY_CONFIG.MAX_BRIGHTNESS;
+
+        if (!isBright) {
+          const reason = brightness < QUALITY_CONFIG.MIN_BRIGHTNESS
+            ? 'Too dark — find better lighting'
+            : 'Too bright — avoid direct light';
+          handleFrameStatusOnJS(true, true, false, false, false, reason, 0);
+          return;
+        }
 
         const roiW = Math.min(width - Math.max(0, Math.floor(face.x)), Math.ceil(face.width));
         const roiH = Math.min(height - Math.max(0, Math.floor(face.y)), Math.ceil(face.height));
         const blur = wLaplacianVariance(roi, roiW, roiH);
         const isFocused = blur >= QUALITY_CONFIG.MIN_BLUR_SCORE;
 
-        let qualityPass = true;
-        let reason: string | null = null;
-        let qualityScore = 0;
-
-        if (!isLargeEnough) {
-          qualityPass = false;
-          reason = 'Move closer to camera';
-        } else if (!isCentered) {
-          qualityPass = false;
-          reason = 'Center your face';
-        } else if (!isBright) {
-          qualityPass = false;
-          reason = brightness < QUALITY_CONFIG.MIN_BRIGHTNESS 
-            ? 'Too dark — find better lighting' 
-            : 'Too bright — avoid direct light';
-        } else if (!isFocused) {
-          qualityPass = false;
-          reason = 'Image too blurry — hold still';
+        if (!isFocused) {
+          handleFrameStatusOnJS(true, true, true, false, false, 'Image too blurry — hold still', 0);
+          return;
         }
 
-        if (qualityPass) {
-          qualityScore = Math.min(1.0, (blur / 300) * 0.4 + ((brightness - 35) / 185) * 0.3 + (faceSize / 200) * 0.3);
-        }
+        const qualityScore = Math.min(1.0, (blur / 300) * 0.4 + ((brightness - 35) / 185) * 0.3 + (faceSize / 200) * 0.3);
 
-        // Send status indicators to JS
-        handleFrameStatusOnJS(true, isCentered, isBright, isFocused, qualityPass, reason, qualityScore);
-
-        if (!qualityPass) return;
+        // All quality checks passed
+        handleFrameStatusOnJS(true, isCentered, isBright, isFocused, true, null, qualityScore);
 
         // Step 3: Extract embedding (synchronous)
         const embedding = wExtractEmbedding(pixels, face, width, recModel);
@@ -546,52 +605,6 @@ export const EnrollScreen: React.FC = () => {
       }
     });
   }, [detModel, recModel, handleEmbeddingOnJS, handleFrameStatusOnJS]);
-
-  const finalizeEnrollment = async (embeddings: number[][]) => {
-    setState(prev => {
-      const next = { ...prev, step: 'PROCESSING' as const };
-      stepRef.current = next.step;
-      return next;
-    });
-
-    try {
-      // Average the 5 embeddings → more robust than single capture
-      const avgEmbedding = averageEmbeddings(embeddings);
-
-      const userId = uuid();
-      const deviceId = await DeviceInfo.getUniqueId();
-
-      const faceEmbedding: FaceEmbedding = {
-        id: uuid(),
-        userId,
-        userName: nameRef.current.trim(),
-        employeeId: employeeIdRef.current.trim(),
-        embedding: avgEmbedding,
-        enrolledAt: Date.now(),
-        deviceId,
-      };
-
-      await DatabaseService.saveEmbedding(faceEmbedding);
-      FaceEngine.addEmbedding(faceEmbedding);
-
-      setState(prev => ({ ...prev, step: 'DONE' }));
-    } catch (err) {
-      console.error('[Enroll] Save error:', err);
-      setState(prev => ({ ...prev, step: 'ERROR' }));
-    }
-  };
-
-  const averageEmbeddings = (embeddings: number[][]): number[] => {
-    const dim = embeddings[0].length;
-    const avg = new Array(dim).fill(0);
-    for (const emb of embeddings) {
-      for (let i = 0; i < dim; i++) avg[i] += emb[i];
-    }
-    for (let i = 0; i < dim; i++) avg[i] /= embeddings.length;
-    // Re-normalize
-    const norm = Math.sqrt(avg.reduce((s, x) => s + x * x, 0));
-    return avg.map(x => x / norm);
-  };
 
   const startCapture = async () => {
     if (!name.trim()) { Alert.alert('Error', 'Please enter name'); return; }

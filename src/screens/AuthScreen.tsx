@@ -7,7 +7,7 @@ import {
   Animated, StatusBar, ActivityIndicator,
 } from 'react-native';
 import {
-  Camera, useCameraDevice, useCameraPermission,
+  Camera, useCameraDevice, useCameraFormat, useCameraPermission,
   runAtTargetFps, useFrameProcessor,
 } from 'react-native-vision-camera';
 import { Worklets } from 'react-native-worklets-core';
@@ -68,6 +68,7 @@ export const AuthScreen: React.FC = () => {
     isReady,
     modelsLoaded,
     handleFrameResult,
+    reset,
   } = useFaceRecognition({
     onStateChange: setAuthState,
     onChallengeChange: setCurrentChallenge,
@@ -147,7 +148,7 @@ export const AuthScreen: React.FC = () => {
         const width = frame.width;
         const height = frame.height;
         const buffer = frame.toArrayBuffer();
-        const pixels = new Float32Array(new Uint8Array(buffer));
+        const pixels = new Uint8Array(buffer);
 
         // Face detection (sync in worklet)
         const face = wDetectFace(pixels, width, height, detModel);
@@ -398,7 +399,7 @@ export const AuthScreen: React.FC = () => {
             {(authState === 'FAILED' || authState === 'SPOOF_DETECTED') && (
               <TouchableOpacity
                 style={[styles.retryButton, authState === 'SPOOF_DETECTED' && styles.spoofRetryButton]}
-                onPress={() => setAuthState('WAITING_FACE')}
+                onPress={reset}
               >
                 <Text style={styles.retryText}>↻ Try Again</Text>
               </TouchableOpacity>
@@ -646,7 +647,7 @@ const CameraFeed: React.FC<{
       return () => clearTimeout(timer);
     } else {
       setTimedOut(false);
-      onCameraLoaded(true);
+      onCameraLoaded(false);
     }
   }, [device, onCameraLoaded]);
 
@@ -669,16 +670,27 @@ const CameraFeed: React.FC<{
     );
   }
 
+  // Select lowest resolution format (~480p) to minimize per-frame memory
+  const format = useCameraFormat(device, [
+    { videoResolution: { width: 640, height: 480 } },
+  ]);
+
   return (
     <Camera
       style={StyleSheet.absoluteFill}
       device={device}
       isActive={isActive}
       frameProcessor={frameProcessor}
+      format={format}
       photo={false}
       video={true}
       audio={false}
       pixelFormat="rgb"
+      onInitialized={() => onCameraLoaded(true)}
+      onError={(error) => {
+        console.error('[CameraFeed] error:', error);
+        onCameraLoaded(false);
+      }}
     />
   );
 };

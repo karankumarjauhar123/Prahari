@@ -70,17 +70,21 @@ class SyncServiceClass {
       online = true;
     } catch {
       // Fallback to Google generate_204
+      let fallbackTimeout: ReturnType<typeof setTimeout> | undefined;
       try {
         const fallbackController = new AbortController();
-        const fallbackTimeout = setTimeout(() => fallbackController.abort(), 5000);
+        fallbackTimeout = setTimeout(() => fallbackController.abort(), 5000);
         await fetch('https://www.google.com/generate_204', {
           method: 'HEAD',
           signal: fallbackController.signal,
         });
-        clearTimeout(fallbackTimeout);
         online = true;
       } catch {
         online = false;
+      } finally {
+        if (fallbackTimeout) {
+          clearTimeout(fallbackTimeout);
+        }
       }
     } finally {
       clearTimeout(timeout);
@@ -142,6 +146,8 @@ class SyncServiceClass {
           const payload = this.buildSyncPayload(chunk);
           const endpoint = await this.getSyncEndpoint();
 
+          const controller = new AbortController();
+          const syncTimeout = setTimeout(() => controller.abort(), 15000);
           let response: Response;
           try {
             response = await fetch(endpoint, {
@@ -153,10 +159,13 @@ class SyncServiceClass {
                 'X-Schema-Version': '1.0',
               },
               body: JSON.stringify(payload),
+              signal: controller.signal,
             });
           } catch (fetchError) {
             console.error('[SyncService] Network fetch error during batch sync:', fetchError);
             throw fetchError; // propagate to trigger retry later
+          } finally {
+            clearTimeout(syncTimeout);
           }
 
           if (!response.ok) {
@@ -247,18 +256,37 @@ class SyncServiceClass {
       deviceId: this.deviceId,
       syncedAt: new Date().toISOString(),
       recordCount: records.length,
-      records: records.map(r => ({
-        id: r.id,
-        userId: r.userId,
-        userName: r.userName,
-        employeeId: r.employeeId,
-        timestamp: r.timestamp,
-        isoTimestamp: new Date(r.timestamp).toISOString(),
-        confidence: Math.round((r.confidence ?? 0) * 10000) / 10000,
-        livenessScore: Math.round((r.livenessScore ?? 0) * 10000) / 10000,
-        location: r.location ?? null, // normalize undefined to null for JSON compliance
-        imageHash: r.imageHash, // SHA-256 only — no raw image ever leaves device
-      })),
+      records: records.map(r => {
+        let isoTimestampStr = new Date().toISOString();
+        try {
+          if (typeof r.timestamp === 'number' && !isNaN(r.timestamp) && r.timestamp > 0) {
+            isoTimestampStr = new Date(r.timestamp).toISOString();
+          }
+        } catch {
+          // Fallback if parsing fails
+        }
+
+        const confidenceVal = typeof r.confidence === 'number' && !isNaN(r.confidence)
+          ? Math.round(r.confidence * 10000) / 10000
+          : 0;
+
+        const livenessVal = typeof r.livenessScore === 'number' && !isNaN(r.livenessScore)
+          ? Math.round(r.livenessScore * 10000) / 10000
+          : 0;
+
+        return {
+          id: r.id,
+          userId: r.userId,
+          userName: r.userName,
+          employeeId: r.employeeId,
+          timestamp: r.timestamp,
+          isoTimestamp: isoTimestampStr,
+          confidence: confidenceVal,
+          livenessScore: livenessVal,
+          location: r.location ?? null, // normalize undefined to null for JSON compliance
+          imageHash: r.imageHash, // SHA-256 only — no raw image ever leaves device
+        };
+      }),
     };
   }
 

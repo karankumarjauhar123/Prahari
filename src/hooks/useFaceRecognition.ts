@@ -45,7 +45,13 @@ interface Props {
   onFailed: (reason: string) => void;
 }
 
-export const useFaceRecognition = (props: Props) => {
+export const useFaceRecognition = (props: Props): {
+  isReady: boolean;
+  modelsLoaded: boolean;
+  handleFrameResult: (result: FrameResult) => Promise<void>;
+  startEnrollment: () => void;
+  reset: () => void;
+} => {
   const [isReady, setIsReady] = useState(false);
   const [modelsLoaded, setModelsLoaded] = useState(false);
   
@@ -199,6 +205,7 @@ export const useFaceRecognition = (props: Props) => {
           LivenessEngine.activeLivenessActive.value = false;
           updateState('SPOOF_DETECTED');
           propsRef.current.onFailed('Spoof attempt detected');
+          if (resetTimeoutRef.current) clearTimeout(resetTimeoutRef.current);
           resetTimeoutRef.current = setTimeout(() => {
             updateState('WAITING_FACE');
             activeCompleteRef.current = false;
@@ -215,6 +222,7 @@ export const useFaceRecognition = (props: Props) => {
             greyZoneFrameCountRef.current = 0;
             updateState('FAILED');
             propsRef.current.onFailed('Liveness check inconclusive — please adjust lighting');
+            if (resetTimeoutRef.current) clearTimeout(resetTimeoutRef.current);
             resetTimeoutRef.current = setTimeout(() => {
               updateState('WAITING_FACE');
               activeCompleteRef.current = false;
@@ -244,6 +252,7 @@ export const useFaceRecognition = (props: Props) => {
           LivenessEngine.activeLivenessActive.value = false;
           updateState('FAILED');
           propsRef.current.onFailed('Liveness challenge timed out — try again');
+          if (resetTimeoutRef.current) clearTimeout(resetTimeoutRef.current);
           resetTimeoutRef.current = setTimeout(() => {
             updateState('WAITING_FACE');
             activeCompleteRef.current = false;
@@ -297,6 +306,7 @@ export const useFaceRecognition = (props: Props) => {
             updateState('SUCCESS');
             propsRef.current.onSuccess(matchResult.userName, matchResult.confidence);
 
+            if (resetTimeoutRef.current) clearTimeout(resetTimeoutRef.current);
             resetTimeoutRef.current = setTimeout(() => {
               updateState('WAITING_FACE');
               activeCompleteRef.current = false;
@@ -306,6 +316,7 @@ export const useFaceRecognition = (props: Props) => {
           } else {
             updateState('FAILED');
             propsRef.current.onFailed('Face not recognized');
+            if (resetTimeoutRef.current) clearTimeout(resetTimeoutRef.current);
             resetTimeoutRef.current = setTimeout(() => {
               updateState('WAITING_FACE');
               activeCompleteRef.current = false;
@@ -316,6 +327,7 @@ export const useFaceRecognition = (props: Props) => {
           console.error('[useFaceRecognition] Face recognition save/match failed:', dbErr);
           updateState('FAILED');
           propsRef.current.onFailed(dbErr?.message || 'Biometric database error');
+          if (resetTimeoutRef.current) clearTimeout(resetTimeoutRef.current);
           resetTimeoutRef.current = setTimeout(() => {
             updateState('WAITING_FACE');
             activeCompleteRef.current = false;
@@ -337,10 +349,25 @@ export const useFaceRecognition = (props: Props) => {
     propsRef.current.onStateChange('WAITING_FACE');
   }, []);
 
+  const reset = useCallback(() => {
+    if (resetTimeoutRef.current) {
+      clearTimeout(resetTimeoutRef.current);
+      resetTimeoutRef.current = null;
+    }
+    LivenessEngine.activeLivenessActive.value = false;
+    activeCompleteRef.current = false;
+    passiveScoreRef.current = 0;
+    greyZoneFrameCountRef.current = 0;
+    isProcessingRef.current = false;
+    propsRef.current.onChallengeChange(null);
+    updateState('WAITING_FACE');
+  }, [updateState]);
+
   return {
     isReady,
     modelsLoaded,
     handleFrameResult,
     startEnrollment,
+    reset,
   };
 };

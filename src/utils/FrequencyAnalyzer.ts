@@ -78,33 +78,17 @@ export class FrequencyAnalyzer {
 
   private computeMagnitudeSpectrum(data: Float32Array, size: number): Float32Array {
     // Build complex arrays
-    const real = Array.from(data);
-    const imag = new Array(size * size).fill(0);
+    const real = new Float32Array(data);
+    const imag = new Float32Array(size * size);
 
     // Row-wise 1D FFT
     for (let y = 0; y < size; y++) {
-      const rowReal = real.slice(y * size, y * size + size);
-      const rowImag = imag.slice(y * size, y * size + size);
-      this.fft1D(rowReal, rowImag);
-      for (let x = 0; x < size; x++) {
-        real[y * size + x] = rowReal[x];
-        imag[y * size + x] = rowImag[x];
-      }
+      this.fft1D(real, imag, y * size, 1, size);
     }
 
     // Column-wise 1D FFT
     for (let x = 0; x < size; x++) {
-      const colReal = [];
-      const colImag = [];
-      for (let y = 0; y < size; y++) {
-        colReal.push(real[y * size + x]);
-        colImag.push(imag[y * size + x]);
-      }
-      this.fft1D(colReal, colImag);
-      for (let y = 0; y < size; y++) {
-        real[y * size + x] = colReal[y];
-        imag[y * size + x] = colImag[y];
-      }
+      this.fft1D(real, imag, x, size, size);
     }
 
     // Magnitude spectrum (log scale for better discrimination)
@@ -117,10 +101,15 @@ export class FrequencyAnalyzer {
     return this.fftShift(mag, size);
   }
 
-  // ─── Cooley-Tukey Radix-2 FFT (in-place) ─────────────────────────────────
+  // ─── Cooley-Tukey Radix-2 FFT (in-place with offset and stride) ──────────
 
-  private fft1D(real: number[], imag: number[]): void {
-    const n = real.length;
+  private fft1D(
+    real: Float32Array,
+    imag: Float32Array,
+    offset: number,
+    stride: number,
+    n: number
+  ): void {
     if (n <= 1) return;
 
     // Bit-reversal permutation
@@ -130,8 +119,15 @@ export class FrequencyAnalyzer {
       for (; j & bit; bit >>= 1) j ^= bit;
       j ^= bit;
       if (i < j) {
-        [real[i], real[j]] = [real[j], real[i]];
-        [imag[i], imag[j]] = [imag[j], imag[i]];
+        const idxI = offset + i * stride;
+        const idxJ = offset + j * stride;
+        const tempR = real[idxI];
+        real[idxI] = real[idxJ];
+        real[idxJ] = tempR;
+
+        const tempI = imag[idxI];
+        imag[idxI] = imag[idxJ];
+        imag[idxJ] = tempI;
       }
     }
 
@@ -144,15 +140,18 @@ export class FrequencyAnalyzer {
       for (let i = 0; i < n; i += len) {
         let curReal = 1, curImag = 0;
         for (let k = 0; k < len / 2; k++) {
-          const uR = real[i + k];
-          const uI = imag[i + k];
-          const vR = real[i + k + len / 2] * curReal - imag[i + k + len / 2] * curImag;
-          const vI = real[i + k + len / 2] * curImag + imag[i + k + len / 2] * curReal;
+          const idx1 = offset + (i + k) * stride;
+          const idx2 = offset + (i + k + len / 2) * stride;
 
-          real[i + k]           = uR + vR;
-          imag[i + k]           = uI + vI;
-          real[i + k + len / 2] = uR - vR;
-          imag[i + k + len / 2] = uI - vI;
+          const uR = real[idx1];
+          const uI = imag[idx1];
+          const vR = real[idx2] * curReal - imag[idx2] * curImag;
+          const vI = real[idx2] * curImag + imag[idx2] * curReal;
+
+          real[idx1] = uR + vR;
+          imag[idx1] = uI + vI;
+          real[idx2] = uR - vR;
+          imag[idx2] = uI - vI;
 
           const nextReal = curReal * wReal - curImag * wImag;
           curImag = curReal * wImag + curImag * wReal;
@@ -182,7 +181,8 @@ export class FrequencyAnalyzer {
 
   private computeRegularityScore(spectrum: Float32Array, size: number): number {
     const center = size / 2;
-    const totalEnergy = spectrum.reduce((s, v) => s + v, 0);
+    let totalEnergy = 0;
+    for (let i = 0; i < spectrum.length; i++) totalEnergy += spectrum[i];
     if (totalEnergy < 1e-6) return 0.5;
 
     // Compute energy in mid-frequency band rings
@@ -193,7 +193,7 @@ export class FrequencyAnalyzer {
     const outerR = size * 0.45;  // outer radius
 
     // Find peaks in spectrum (local maxima)
-    const peaks: number[] = [];
+    const peakCoords: { x: number; y: number; val: number }[] = [];
     for (let y = 1; y < size - 1; y++) {
       for (let x = 1; x < size - 1; x++) {
         const r = Math.sqrt((x - center) ** 2 + (y - center) ** 2);
@@ -208,7 +208,7 @@ export class FrequencyAnalyzer {
           spectrum[y*size+(x-1)], spectrum[y*size+(x+1)],
         ];
         if (val > Math.max(...neighbors) * 1.5) {
-          peaks.push(val);
+          peakCoords.push({ x, y, val });
           peakEnergy += val;
         }
       }
@@ -220,7 +220,7 @@ export class FrequencyAnalyzer {
     const peakConcentration = peakEnergy / midBandEnergy;
 
     // Count symmetric peak pairs (screens/prints have periodic symmetry)
-    const symmetryScore = this.computeSymmetryScore(spectrum, size, peaks.length);
+    const symmetryScore = this.computeSymmetryScore(size, peakCoords);
 
     // Combined regularity: high → likely spoof
     const regularity = peakConcentration * 0.6 + symmetryScore * 0.4;
@@ -230,30 +230,36 @@ export class FrequencyAnalyzer {
   }
 
   private computeSymmetryScore(
-    spectrum: Float32Array,
     size: number,
-    peakCount: number,
+    peakCoords: { x: number; y: number; val: number }[]
   ): number {
-    if (peakCount < 2) return 0.1;
-    // High symmetry in spectrum → periodic pattern in spatial domain
-    let symmetricPairs = 0;
-    const center = size / 2;
-    const threshold = 0.7;
+    if (peakCoords.length < 2) return 0.1;
 
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        const mirrorX = size - 1 - x;
-        const mirrorY = size - 1 - y;
-        const v1 = spectrum[y * size + x];
-        const v2 = spectrum[mirrorY * size + mirrorX];
-        if (v1 > 0.1 && v2 > 0.1) {
-          const ratio = Math.min(v1, v2) / Math.max(v1, v2);
-          if (ratio > threshold) symmetricPairs++;
+    let symmetricPeaks = 0;
+    // For each peak, check if there is a corresponding peak at:
+    // - Horizontal reflection: (size - x, y)
+    // - Vertical reflection: (x, size - y)
+    // We allow a tolerance of 1 pixel in x and y because FFT peaks might be slightly off.
+    for (let i = 0; i < peakCoords.length; i++) {
+      const p = peakCoords[i];
+      let hasHorizontal = false;
+      let hasVertical = false;
+      for (let j = 0; j < peakCoords.length; j++) {
+        if (i === j) continue;
+        const q = peakCoords[j];
+        if (Math.abs(q.x - (size - p.x)) <= 1 && Math.abs(q.y - p.y) <= 1) {
+          hasHorizontal = true;
         }
+        if (Math.abs(q.x - p.x) <= 1 && Math.abs(q.y - (size - p.y)) <= 1) {
+          hasVertical = true;
+        }
+        if (hasHorizontal && hasVertical) break;
+      }
+      if (hasHorizontal || hasVertical) {
+        symmetricPeaks++;
       }
     }
 
-    // Normalize
-    return Math.min(1.0, (symmetricPairs / (size * size)) * 20);
+    return symmetricPeaks / peakCoords.length;
   }
 }

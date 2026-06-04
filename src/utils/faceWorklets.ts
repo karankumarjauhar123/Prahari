@@ -8,12 +8,14 @@ import type { FaceDetection, FaceLandmarks, QualityResult, Point } from '../type
 // ─── Bilinear Resize ────────────────────────────────────────────────────────
 
 export function wBilinearResize(
-  src: Float32Array, srcW: number, srcH: number,
+  src: Float32Array | Uint8Array, srcW: number, srcH: number,
   dstW: number, dstH: number
 ): Float32Array {
   'worklet';
+  if (src.length === 0 || srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) {
+    return new Float32Array(Math.max(0, dstW) * Math.max(0, dstH) * 3);
+  }
   const dst = new Float32Array(dstW * dstH * 3);
-  if (src.length === 0 || srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) return dst;
   const scaleX = srcW / dstW, scaleY = srcH / dstH;
   for (let dy = 0; dy < dstH; dy++) {
     for (let dx = 0; dx < dstW; dx++) {
@@ -28,10 +30,10 @@ export function wBilinearResize(
         const idx10 = (y0 * srcW + x1) * 3 + c;
         const idx01 = (y1 * srcW + x0) * 3 + c;
         const idx11 = (y1 * srcW + x1) * 3 + c;
-        const v00 = idx00 < src.length ? src[idx00] : 0;
-        const v10 = idx10 < src.length ? src[idx10] : 0;
-        const v01 = idx01 < src.length ? src[idx01] : 0;
-        const v11 = idx11 < src.length ? src[idx11] : 0;
+        const v00 = idx00 >= 0 && idx00 < src.length ? src[idx00] : 0;
+        const v10 = idx10 >= 0 && idx10 < src.length ? src[idx10] : 0;
+        const v01 = idx01 >= 0 && idx01 < src.length ? src[idx01] : 0;
+        const v11 = idx11 >= 0 && idx11 < src.length ? src[idx11] : 0;
         dst[(dy * dstW + dx) * 3 + c] =
           (1 - fx) * (1 - fy) * v00 +
           fx * (1 - fy) * v10 +
@@ -52,7 +54,7 @@ export function wParseYOLOFaceOutput(
   inputSize: number
 ): FaceDetection | null {
   'worklet';
-  if (!output || output.length < 168000) return null;
+  if (!output || output.length < 168000 || origW <= 0 || origH <= 0 || inputSize <= 0) return null;
   const numPredictions = 8400;
   let bestConf = MODEL_CONFIG.DETECTION_CONFIDENCE_THRESHOLD;
   let bestFace: FaceDetection | null = null;
@@ -67,19 +69,33 @@ export function wParseYOLOFaceOutput(
     const cy = output[1 * numPredictions + i] * scaleY;
     const w = output[2 * numPredictions + i] * scaleX;
     const h = output[3 * numPredictions + i] * scaleY;
-    const x = cx - w / 2;
-    const y = cy - h / 2;
+
+    let x1 = cx - w / 2;
+    let y1 = cy - h / 2;
+    let x2 = cx + w / 2;
+    let y2 = cy + h / 2;
+
+    x1 = Math.max(0, Math.min(origW, x1));
+    y1 = Math.max(0, Math.min(origH, y1));
+    x2 = Math.max(0, Math.min(origW, x2));
+    y2 = Math.max(0, Math.min(origH, y2));
+
+    const clampedW = x2 - x1;
+    const clampedH = y2 - y1;
+
+    const clampX = (val: number) => Math.max(0, Math.min(origW - 1, val));
+    const clampY = (val: number) => Math.max(0, Math.min(origH - 1, val));
 
     const landmarks: FaceLandmarks = {
-      leftEye:   { x: output[5 * numPredictions + i] * scaleX,  y: output[6 * numPredictions + i] * scaleY },
-      rightEye:  { x: output[8 * numPredictions + i] * scaleX,  y: output[9 * numPredictions + i] * scaleY },
-      nose:      { x: output[11 * numPredictions + i] * scaleX, y: output[12 * numPredictions + i] * scaleY },
-      leftMouth: { x: output[14 * numPredictions + i] * scaleX, y: output[15 * numPredictions + i] * scaleY },
-      rightMouth:{ x: output[17 * numPredictions + i] * scaleX, y: output[18 * numPredictions + i] * scaleY },
+      leftEye:   { x: clampX(output[5 * numPredictions + i] * scaleX),  y: clampY(output[6 * numPredictions + i] * scaleY) },
+      rightEye:  { x: clampX(output[8 * numPredictions + i] * scaleX),  y: clampY(output[9 * numPredictions + i] * scaleY) },
+      nose:      { x: clampX(output[11 * numPredictions + i] * scaleX), y: clampY(output[12 * numPredictions + i] * scaleY) },
+      leftMouth: { x: clampX(output[14 * numPredictions + i] * scaleX), y: clampY(output[15 * numPredictions + i] * scaleY) },
+      rightMouth:{ x: clampX(output[17 * numPredictions + i] * scaleX), y: clampY(output[18 * numPredictions + i] * scaleY) },
     };
 
     bestConf = conf;
-    bestFace = { x, y, width: w, height: h, confidence: conf, landmarks };
+    bestFace = { x: x1, y: y1, width: clampedW, height: clampedH, confidence: conf, landmarks };
   }
   return bestFace;
 }
@@ -87,7 +103,7 @@ export function wParseYOLOFaceOutput(
 // ─── Face Quality Check ─────────────────────────────────────────────────────
 
 export function wCheckFaceQuality(
-  pixelBuffer: Float32Array,
+  pixelBuffer: Float32Array | Uint8Array,
   face: FaceDetection,
   frameWidth: number,
   frameHeight: number
@@ -112,6 +128,9 @@ export function wCheckFaceQuality(
   const roiH = Math.max(0, Math.min(frameHeight - y, Math.ceil(face.height)));
   const roi = wExtractROI(pixelBuffer, face, frameWidth, frameHeight);
 
+  if (roi.length === 0) {
+    return { pass: false, score: 0, reason: 'Invalid face region', blur: 0, brightness: 0, faceSize };
+  }
   const brightness = roi.reduce((a: number, b: number) => a + b, 0) / roi.length;
   if (brightness < QUALITY_CONFIG.MIN_BRIGHTNESS) {
     return { pass: false, score: 0.4, reason: 'Too dark — find better lighting', blur: 0, brightness, faceSize };
@@ -134,7 +153,7 @@ export function wCheckFaceQuality(
 // ─── Extract ROI ────────────────────────────────────────────────────────────
 
 export function wExtractROI(
-  pixels: Float32Array, face: FaceDetection,
+  pixels: Float32Array | Uint8Array, face: FaceDetection,
   frameWidth: number, frameHeight: number
 ): Float32Array {
   'worklet';
@@ -147,7 +166,7 @@ export function wExtractROI(
     for (let col = 0; col < w; col++) {
       const srcIdx = ((y + row) * frameWidth + (x + col)) * 3;
       const dstIdx = (row * w + col) * 3;
-      if (srcIdx + 2 < pixels.length) {
+      if (srcIdx >= 0 && srcIdx + 2 < pixels.length) {
         roi[dstIdx] = pixels[srcIdx];
         roi[dstIdx + 1] = pixels[srcIdx + 1];
         roi[dstIdx + 2] = pixels[srcIdx + 2];
@@ -159,12 +178,12 @@ export function wExtractROI(
 
 // ─── Laplacian Variance (blur detection) ────────────────────────────────────
 
-export function wLaplacianVariance(pixels: Float32Array, width: number, height: number): number {
+export function wLaplacianVariance(pixels: Float32Array | Uint8Array, width: number, height: number): number {
   'worklet';
   const kernel = [0, 1, 0, 1, -4, 1, 0, 1, 0];
   let sum = 0, sumSq = 0;
+  if (width <= 2 || height <= 2) return 0;
   const n = (width - 2) * (height - 2);
-  if (n <= 0) return 0;
   for (let y = 1; y < height - 1; y++) {
     for (let x = 1; x < width - 1; x++) {
       let laplacian = 0;
@@ -172,7 +191,7 @@ export function wLaplacianVariance(pixels: Float32Array, width: number, height: 
         for (let kx = -1; kx <= 1; kx++) {
           const pidx = (y + ky) * width + (x + kx);
           const idx = pidx * 3;
-          const gray = (idx + 2 < pixels.length)
+          const gray = (idx >= 0 && idx + 2 < pixels.length)
             ? pixels[idx] * 0.299 + pixels[idx + 1] * 0.587 + pixels[idx + 2] * 0.114
             : 0;
           laplacian += gray * kernel[(ky + 1) * 3 + (kx + 1)];
@@ -218,9 +237,10 @@ export function wEstimateSimilarityTransform(src: Point[], dst: Point[]) {
 // ─── Face Alignment (5-point) ───────────────────────────────────────────────
 
 export function wAlignFace(
-  pixels: Float32Array, face: FaceDetection, frameWidth: number
+  pixels: Float32Array | Uint8Array, face: FaceDetection, frameWidth: number
 ): Float32Array {
   'worklet';
+  if (frameWidth <= 0 || pixels.length === 0) return new Float32Array(112 * 112 * 3);
   const frameHeight = Math.floor(pixels.length / (frameWidth * 3));
   const refPoints = [
     { x: 30.2946, y: 51.6963 }, { x: 65.5318, y: 51.5014 },
@@ -256,15 +276,32 @@ export function wAlignFace(
         const idx10 = (y0 * frameWidth + x1) * 3;
         const idx01 = (y1 * frameWidth + x0) * 3;
         const idx11 = (y1 * frameWidth + x1) * 3;
-        output[dstIdx]     = w00 * pixels[idx00]     + w10 * pixels[idx10]     + w01 * pixels[idx01]     + w11 * pixels[idx11];
-        output[dstIdx + 1] = w00 * pixels[idx00 + 1] + w10 * pixels[idx10 + 1] + w01 * pixels[idx01 + 1] + w11 * pixels[idx11 + 1];
-        output[dstIdx + 2] = w00 * pixels[idx00 + 2] + w10 * pixels[idx10 + 2] + w01 * pixels[idx01 + 2] + w11 * pixels[idx11 + 2];
+
+        const p00_r = idx00 >= 0 && idx00 + 2 < pixels.length ? pixels[idx00] : 0;
+        const p00_g = idx00 >= 0 && idx00 + 2 < pixels.length ? pixels[idx00 + 1] : 0;
+        const p00_b = idx00 >= 0 && idx00 + 2 < pixels.length ? pixels[idx00 + 2] : 0;
+
+        const p10_r = idx10 >= 0 && idx10 + 2 < pixels.length ? pixels[idx10] : 0;
+        const p10_g = idx10 >= 0 && idx10 + 2 < pixels.length ? pixels[idx10 + 1] : 0;
+        const p10_b = idx10 >= 0 && idx10 + 2 < pixels.length ? pixels[idx10 + 2] : 0;
+
+        const p01_r = idx01 >= 0 && idx01 + 2 < pixels.length ? pixels[idx01] : 0;
+        const p01_g = idx01 >= 0 && idx01 + 2 < pixels.length ? pixels[idx01 + 1] : 0;
+        const p01_b = idx01 >= 0 && idx01 + 2 < pixels.length ? pixels[idx01 + 2] : 0;
+
+        const p11_r = idx11 >= 0 && idx11 + 2 < pixels.length ? pixels[idx11] : 0;
+        const p11_g = idx11 >= 0 && idx11 + 2 < pixels.length ? pixels[idx11 + 1] : 0;
+        const p11_b = idx11 >= 0 && idx11 + 2 < pixels.length ? pixels[idx11 + 2] : 0;
+
+        output[dstIdx]     = w00 * p00_r + w10 * p10_r + w01 * p01_r + w11 * p11_r;
+        output[dstIdx + 1] = w00 * p00_g + w10 * p10_g + w01 * p01_g + w11 * p11_g;
+        output[dstIdx + 2] = w00 * p00_b + w10 * p10_b + w01 * p01_b + w11 * p11_b;
       } else {
         const sx = Math.round(srcX);
         const sy = Math.round(srcY);
         if (sx >= 0 && sx < frameWidth && sy >= 0 && sy < frameHeight) {
           const srcIdx = (sy * frameWidth + sx) * 3;
-          if (srcIdx + 2 < pixels.length) {
+          if (srcIdx >= 0 && srcIdx + 2 < pixels.length) {
             output[dstIdx] = pixels[srcIdx];
             output[dstIdx + 1] = pixels[srcIdx + 1];
             output[dstIdx + 2] = pixels[srcIdx + 2];
@@ -296,10 +333,13 @@ export function wCosineSimilarity(a: number[], b: number[]): number {
 // ─── Crop and Resize (for anti-spoof / face mesh) ───────────────────────────
 
 export function wCropResize(
-  pixels: Float32Array, x: number, y: number,
+  pixels: Float32Array | Uint8Array, x: number, y: number,
   w: number, h: number, frameWidth: number, targetSize: number
 ): Float32Array {
   'worklet';
+  if (pixels.length === 0 || frameWidth <= 0 || targetSize <= 0) {
+    return new Float32Array(Math.max(0, targetSize) * Math.max(0, targetSize) * 3);
+  }
   const frameHeight = Math.floor(pixels.length / (frameWidth * 3));
   const output = new Float32Array(targetSize * targetSize * 3);
   const scaleX = w / targetSize, scaleY = h / targetSize;
@@ -323,15 +363,32 @@ export function wCropResize(
         const idx10 = (y0 * frameWidth + x1) * 3;
         const idx01 = (y1 * frameWidth + x0) * 3;
         const idx11 = (y1 * frameWidth + x1) * 3;
-        output[dstIdx]     = w00 * pixels[idx00]     + w10 * pixels[idx10]     + w01 * pixels[idx01]     + w11 * pixels[idx11];
-        output[dstIdx + 1] = w00 * pixels[idx00 + 1] + w10 * pixels[idx10 + 1] + w01 * pixels[idx01 + 1] + w11 * pixels[idx11 + 1];
-        output[dstIdx + 2] = w00 * pixels[idx00 + 2] + w10 * pixels[idx10 + 2] + w01 * pixels[idx01 + 2] + w11 * pixels[idx11 + 2];
+
+        const p00_r = idx00 >= 0 && idx00 + 2 < pixels.length ? pixels[idx00] : 0;
+        const p00_g = idx00 >= 0 && idx00 + 2 < pixels.length ? pixels[idx00 + 1] : 0;
+        const p00_b = idx00 >= 0 && idx00 + 2 < pixels.length ? pixels[idx00 + 2] : 0;
+
+        const p10_r = idx10 >= 0 && idx10 + 2 < pixels.length ? pixels[idx10] : 0;
+        const p10_g = idx10 >= 0 && idx10 + 2 < pixels.length ? pixels[idx10 + 1] : 0;
+        const p10_b = idx10 >= 0 && idx10 + 2 < pixels.length ? pixels[idx10 + 2] : 0;
+
+        const p01_r = idx01 >= 0 && idx01 + 2 < pixels.length ? pixels[idx01] : 0;
+        const p01_g = idx01 >= 0 && idx01 + 2 < pixels.length ? pixels[idx01 + 1] : 0;
+        const p01_b = idx01 >= 0 && idx01 + 2 < pixels.length ? pixels[idx01 + 2] : 0;
+
+        const p11_r = idx11 >= 0 && idx11 + 2 < pixels.length ? pixels[idx11] : 0;
+        const p11_g = idx11 >= 0 && idx11 + 2 < pixels.length ? pixels[idx11 + 1] : 0;
+        const p11_b = idx11 >= 0 && idx11 + 2 < pixels.length ? pixels[idx11 + 2] : 0;
+
+        output[dstIdx]     = w00 * p00_r + w10 * p10_r + w01 * p01_r + w11 * p11_r;
+        output[dstIdx + 1] = w00 * p00_g + w10 * p10_g + w01 * p01_g + w11 * p11_g;
+        output[dstIdx + 2] = w00 * p00_b + w10 * p10_b + w01 * p01_b + w11 * p11_b;
       } else {
         const sx = Math.round(srcX);
         const sy = Math.round(srcY);
         if (sx >= 0 && sx < frameWidth && sy >= 0 && sy < frameHeight) {
           const srcIdx = (sy * frameWidth + sx) * 3;
-          if (srcIdx + 2 < pixels.length) {
+          if (srcIdx >= 0 && srcIdx + 2 < pixels.length) {
             output[dstIdx] = pixels[srcIdx];
             output[dstIdx + 1] = pixels[srcIdx + 1];
             output[dstIdx + 2] = pixels[srcIdx + 2];
@@ -346,7 +403,7 @@ export function wCropResize(
 // ─── Full face detection pipeline (sync, worklet) ───────────────────────────
 
 export function wDetectFace(
-  pixels: Float32Array, width: number, height: number,
+  pixels: Float32Array | Uint8Array, width: number, height: number,
   detectionModel: any
 ): FaceDetection | null {
   'worklet';
@@ -361,7 +418,7 @@ export function wDetectFace(
 // ─── Full embedding extraction pipeline (sync, worklet) ─────────────────────
 
 export function wExtractEmbedding(
-  pixels: Float32Array, face: FaceDetection, frameWidth: number,
+  pixels: Float32Array | Uint8Array, face: FaceDetection, frameWidth: number,
   recognitionModel: any
 ): number[] {
   'worklet';

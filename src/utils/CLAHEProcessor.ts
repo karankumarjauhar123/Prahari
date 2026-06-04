@@ -24,6 +24,10 @@ export class CLAHEProcessor {
     const tileW = Math.floor(width / tilesX);
     const tileH = Math.floor(height / tilesY);
 
+    if (tileW <= 0 || tileH <= 0 || width <= 0 || height <= 0 || grayPixels.length === 0) {
+      return new Float32Array(grayPixels);
+    }
+
     // 1. Compute CDF LUT for each tile
     const luts: Uint8Array[][] = [];
     for (let ty = 0; ty < tilesY; ty++) {
@@ -57,19 +61,23 @@ export class CLAHEProcessor {
         const xFrac = Math.max(0, Math.min(1, txf - tx0));
         const yFrac = Math.max(0, Math.min(1, tyf - ty0));
 
-        const pix = Math.round(Math.max(0, Math.min(255, grayPixels[y * width + x])));
+        const pixelIdx = y * width + x;
+        const rawVal = grayPixels[pixelIdx] ?? 0;
+        const pix = Math.round(Math.max(0, Math.min(255, rawVal)));
 
         // Bilinear interpolation of 4 surrounding tile LUTs
-        const v00 = luts[ty0][tx0][pix];
-        const v10 = luts[ty0][tx1][pix];
-        const v01 = luts[ty1][tx0][pix];
-        const v11 = luts[ty1][tx1][pix];
+        const v00 = luts[ty0][tx0][pix] ?? pix;
+        const v10 = luts[ty0][tx1][pix] ?? pix;
+        const v01 = luts[ty1][tx0][pix] ?? pix;
+        const v11 = luts[ty1][tx1][pix] ?? pix;
 
-        output[y * width + x] =
-          (1 - xFrac) * (1 - yFrac) * v00 +
-          xFrac       * (1 - yFrac) * v10 +
-          (1 - xFrac) * yFrac       * v01 +
-          xFrac       * yFrac       * v11;
+        if (pixelIdx < output.length) {
+          output[pixelIdx] =
+            (1 - xFrac) * (1 - yFrac) * v00 +
+            xFrac       * (1 - yFrac) * v10 +
+            (1 - xFrac) * yFrac       * v01 +
+            xFrac       * yFrac       * v11;
+        }
       }
     }
 
@@ -87,14 +95,15 @@ export class CLAHEProcessor {
     tileH: number,
   ): Uint32Array {
     const hist = new Uint32Array(256);
+    const frameHeight = Math.floor(pixels.length / frameWidth);
     for (let row = 0; row < tileH; row++) {
       for (let col = 0; col < tileW; col++) {
         const px = tileX + col;
         const py = tileY + row;
-        if (px < frameWidth) {
-          const val = Math.round(
-            Math.max(0, Math.min(255, pixels[py * frameWidth + px]))
-          );
+        if (px < frameWidth && py < frameHeight) {
+          const pixelIdx = py * frameWidth + px;
+          const rawVal = pixels[pixelIdx] ?? 0;
+          const val = Math.round(Math.max(0, Math.min(255, rawVal)));
           hist[val]++;
         }
       }
